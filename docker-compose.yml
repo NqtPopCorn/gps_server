@@ -29,7 +29,7 @@ services:
 
   # 3. Dịch vụ Web (Django)
   web:
-    build: . # Yêu cầu Docker compose tự động build image từ Dockerfile hiện tại
+    image: truongngodev/gps_tour_server:v1.0.1
     container_name: gps_server
     restart: unless-stopped
     ports:
@@ -48,24 +48,25 @@ services:
       - REDIS_PORT=6379
     volumes:
       - .:/app # Mount code từ máy thật vào container để dev tiện hơn
-  # huey_worker:
-  #   build: . 
-  #   container_name: project_huey_worker
-  #   restart: unless-stopped
-  #   depends_on:
-  #     - db
-  #     - redis
-  #   environment:
-  #     - DB_HOST=db
-  #     - DB_PORT=3306
-  #     - DB_NAME=my_django_db
-  #     - DB_USER=my_db_user
-  #     - DB_PASSWORD=my_super_secret_password
-  #     - REDIS_HOST=redis
-  #   # Lệnh chạy worker của Huey thay vì chạy web server
-  #   command: python manage.py run_huey
-  #   volumes:
-  #     - .:/app
+
+  huey_worker:
+    build: .
+    container_name: project_huey_worker
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+    environment:
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=my_django_db
+      - DB_USER=my_db_user
+      - DB_PASSWORD=my_super_secret_password
+      - REDIS_HOST=redis
+    # Lệnh chạy worker của Huey thay vì chạy web server
+    command: python manage.py run_huey
+    volumes:
+      - .:/app
 
 volumes:
   redis_data:

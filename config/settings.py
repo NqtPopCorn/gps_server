@@ -204,7 +204,7 @@ HUEY = {
     'connection': {
         # Đọc từ biến môi trường, nếu không có thì mặc định lấy 'redis'
         'host': os.environ.get('REDIS_HOST', 'redis'),
-        'port': int(os.environ.get('REDIS_PORT', 6379)),
+        'port': os.environ.get('REDIS_PORT', 6379),
         'db': 0,
     },
     'immediate': False, 
