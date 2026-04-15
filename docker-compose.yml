@@ -29,7 +29,7 @@ services:
 
   # 3. Dịch vụ Web (Django)
   web:
-    image: truongngodev/gps_tour_server:v1.0.1
+    build: .
     container_name: gps_server
     restart: unless-stopped
     ports:
