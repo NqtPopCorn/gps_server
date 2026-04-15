@@ -15,10 +15,10 @@ class UserResponseSerializer(serializers.ModelSerializer):
         data['created_at'] = data.pop('date_joined')
         return data
 
-
 class RegisterSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(min_length=8, write_only=True)
+    role = serializers.ChoiceField(choices=["partner", "tourist"], default="tourist")
 
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
@@ -29,8 +29,8 @@ class RegisterSerializer(serializers.Serializer):
         return User.objects.create_user(
             email=validated_data['email'],
             password=validated_data['password'],
+            role=validated_data['role'],
         )
-
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
