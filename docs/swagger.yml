@@ -1,0 +1,1586 @@
+openapi: 3.0.3
+info:
+  title: Tourist Audio Guide API
+  version: 1.0.0
+  description: |
+    API for tourist audio guide application with multi-language support.
+
+    **Features:**
+    - Points of Interest (POIs) management
+    - Multi-language content (text + audio)
+    - Tour collections with ordered POIs
+    - User authentication and authorization
+    - Subscription system
+
+    **Authentication:** Use JWT Bearer token obtained from `/auth/login`
+
+servers:
+  - url: http://localhost:8000/api
+    description: Local development server
+  - url: https://api.yourapp.com
+    description: Production server
+
+tags:
+  - name: Auth
+    description: User authentication endpoints
+  - name: POI
+    description: Public POI endpoints
+  - name: Tour
+    description: Public Tour endpoints
+  - name: Subscription
+    description: Subscription management
+  - name: Admin-POI
+    description: Admin POI management
+  - name: Admin-Tour
+    description: Admin Tour management
+
+paths:
+  # ========================
+  # AUTHENTICATION
+  # ========================
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register new user
+      description: Create a new user account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                  description: User email address
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  example: "SecurePass123"
+                  description: Password (minimum 8 characters)
+      responses:
+        201:
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/UserResponse"
+                      message:
+                        type: string
+                        example: User registered successfully
+                      status:
+                        type: integer
+                        example: 201
+        400:
+          $ref: "#/components/responses/BadRequest"
+        409:
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Email already registered"
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: User login
+      description: Authenticate user and get JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: "SecurePass123"
+      responses:
+        200:
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [access_token, user]
+                        properties:
+                          access_token:
+                            type: string
+                            description: JWT token for API requests
+                            example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                          token_type:
+                            type: string
+                            default: Bearer
+                          user:
+                            $ref: "#/components/schemas/UserResponse"
+                      message:
+                        type: string
+                        example: Login successful
+                      status:
+                        type: integer
+                        example: 200
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        400:
+          $ref: "#/components/responses/BadRequest"
+
+  # ========================
+  # POI MANAGEMENT (ADMIN)
+  # ========================
+
+  /admin/pois:
+    post:
+      tags: [Admin-POI]
+      summary: Create POI
+      description: Create a new Point of Interest (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                [
+                  default_lang,
+                  default_name,
+                  default_description,
+                  latitude,
+                  longitude,
+                  type,
+                  slug,
+                ]
+              properties:
+                default_lang:
+                  type: string
+                  example: "vi"
+                  description: Default language code
+                default_name:
+                  type: string
+                  example: "Hanoian Museum"
+                  description: Default POI name
+                default_description:
+                  type: string
+                  example: "A historic museum in Hanoi"
+                  description: Default POI description
+                default_audio:
+                  type: string
+                  format: binary
+                  description: Default language narration audio file
+                latitude:
+                  type: number
+                  format: double
+                  example: 21.0285
+                  description: GPS latitude coordinate
+                longitude:
+                  type: number
+                  format: double
+                  example: 105.8542
+                  description: GPS longitude coordinate
+                radius:
+                  type: integer
+                  default: 50
+                  minimum: 10
+                  maximum: 500
+                  description: Geo-fence radius in meters
+                image:
+                  type: string
+                  format: binary
+                  description: POI image file
+                type:
+                  type: string
+                  enum: [food, drink, museum, park, historical, other]
+                  example: museum
+                  description: POI category type
+                slug:
+                  type: string
+                  pattern: '^[a-z0-9\-]+$'
+                  example: "hanoian-museum"
+                  description: URL-friendly identifier (unique)
+      responses:
+        201:
+          description: POI created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/POIDetailResponse"
+                      message:
+                        type: string
+                        example: POI created successfully
+                      status:
+                        type: integer
+                        example: 201
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        409:
+          description: Slug already exists
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Slug already exists"
+
+    get:
+      tags: [Admin-POI]
+      summary: List all POIs (admin)
+      description: Retrieve all POIs with pagination (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+          description: Items per page
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [food, drink, museum, park, historical, other]
+          description: Filter by POI type
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive]
+          description: Filter by status
+      responses:
+        200:
+          description: List of POIs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+                          next:
+                            type: string
+                            nullable: true
+                          previous:
+                            type: string
+                            nullable: true
+                          results:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/POIDetailResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/pois/{id}:
+    get:
+      tags: [Admin-POI]
+      summary: Get POI detail (admin)
+      description: Get detailed information about a specific POI (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: POI detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/POIDetailResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      tags: [Admin-POI]
+      summary: Update POI
+      description: Update POI information (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                default_lang:
+                  type: string
+                latitude:
+                  type: number
+                  format: double
+                longitude:
+                  type: number
+                  format: double
+                radius:
+                  type: integer
+                  minimum: 10
+                  maximum: 500
+                image:
+                  type: string
+                  format: binary
+                type:
+                  type: string
+                  enum: [food, drink, museum, park, historical, other]
+                slug:
+                  type: string
+                  pattern: '^[a-z0-9\-]+$'
+                status:
+                  type: string
+                  enum: [active, inactive]
+      responses:
+        200:
+          description: POI updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/POIDetailResponse"
+                      message:
+                        type: string
+                        example: POI updated successfully
+                      status:
+                        type: integer
+                        example: 200
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Admin-POI]
+      summary: Delete POI
+      description: Delete a POI and all its localizations (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        204:
+          description: POI deleted successfully
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  # ========================
+  # POI LOCALIZATION (ADMIN)
+  # ========================
+
+  /admin/pois/{poi_id}/localizations:
+    post:
+      tags: [Admin-POI]
+      summary: Create or update translated content
+      description: Add or update POI content in a specific language
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: poi_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: POI ID
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [lang_code, name]
+              properties:
+                lang_code:
+                  type: string
+                  enum: [vi, en, fr, zh, ja]
+                  example: "en"
+                  description: Language code
+                name:
+                  type: string
+                  example: "Museum Name in English"
+                  description: Localized POI name
+                description:
+                  type: string
+                  description: Localized POI description
+                audio:
+                  type: string
+                  format: binary
+                  description: Localized narration audio file
+      responses:
+        200:
+          description: Localization created or updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/LocalizationResponse"
+                      message:
+                        type: string
+                        example: Localization updated successfully
+                      status:
+                        type: integer
+                        example: 200
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+    get:
+      tags: [Admin-POI]
+      summary: Get all POI localizations
+      description: Retrieve all language versions of a POI (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: poi_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: List of localizations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/LocalizationResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  /admin/pois/{poi_id}/localizations/{lang_code}:
+    delete:
+      tags: [Admin-POI]
+      summary: Delete specific localization
+      description: Remove POI content for a specific language (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: poi_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: lang_code
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [vi, en, fr, zh, ja]
+      responses:
+        204:
+          description: Localization deleted successfully
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  # ========================
+  # TOUR MANAGEMENT (ADMIN)
+  # ========================
+
+  /admin/tours:
+    post:
+      tags: [Admin-Tour]
+      summary: Create tour
+      description: Create a new tour collection (admin only)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: "Historical Hanoi Tour"
+                  description: Tour name
+                description:
+                  type: string
+                  example: "Explore the historical sites of Hanoi"
+                  description: Tour description
+      responses:
+        201:
+          description: Tour created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TourResponse"
+                      message:
+                        type: string
+                        example: Tour created successfully
+                      status:
+                        type: integer
+                        example: 201
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+
+    get:
+      tags: [Admin-Tour]
+      summary: List all tours (admin)
+      description: Retrieve all tours with pagination (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        200:
+          description: List of tours
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+                          results:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/TourResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+
+  /admin/tours/{id}:
+    put:
+      tags: [Admin-Tour]
+      summary: Update tour
+      description: Update tour information (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+      responses:
+        200:
+          description: Tour updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TourResponse"
+                      message:
+                        type: string
+                        example: Tour updated successfully
+                      status:
+                        type: integer
+                        example: 200
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Admin-Tour]
+      summary: Delete tour
+      description: Delete a tour and all its points (admin only)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        204:
+          description: Tour deleted successfully
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  # ========================
+  # TOUR POINTS (ADMIN)
+  # ========================
+
+  /admin/tours/{tour_id}/points:
+    post:
+      tags: [Admin-Tour]
+      summary: Add POI to tour
+      description: Add an existing POI to a tour at a specific position
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tour_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [poi_id, position]
+              properties:
+                poi_id:
+                  type: string
+                  description: POI ID to add
+                position:
+                  type: integer
+                  minimum: 1
+                  example: 1
+                  description: Order position in tour
+      responses:
+        201:
+          description: POI added to tour
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TourPointResponse"
+                      message:
+                        type: string
+                        example: POI added to tour
+                      status:
+                        type: integer
+                        example: 201
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          description: Tour or POI not found
+        409:
+          description: Position already occupied
+
+    get:
+      tags: [Admin-Tour]
+      summary: Get tour points
+      description: Retrieve all POIs in a tour with their order
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tour_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: List of tour points
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TourPointResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  /admin/tours/{tour_id}/points/{point_id}:
+    put:
+      tags: [Admin-Tour]
+      summary: Update tour point position
+      description: Reorder a POI in a tour
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tour_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: point_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                position:
+                  type: integer
+                  minimum: 1
+      responses:
+        200:
+          description: Position updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TourPointResponse"
+                      message:
+                        type: string
+                        example: Position updated
+                      status:
+                        type: integer
+                        example: 200
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+    delete:
+      tags: [Admin-Tour]
+      summary: Remove POI from tour
+      description: Remove a POI from a tour
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: tour_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: point_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        204:
+          description: Point removed from tour
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        403:
+          $ref: "#/components/responses/Forbidden"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  # ========================
+  # PUBLIC POI ENDPOINTS
+  # ========================
+
+  /pois/nearby:
+    get:
+      tags: [POI]
+      summary: Get nearby POIs
+      description: Retrieve POIs near a location in a specific language
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+            example: 21.0285
+          description: Latitude coordinate
+        - name: lng
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+            example: 105.8542
+          description: Longitude coordinate
+        - name: lang
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [vi, en, fr, zh, ja]
+            example: "en"
+          description: Language code for content
+        - name: radius
+          in: query
+          schema:
+            type: integer
+            default: 5000
+            description: Search radius in meters
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+          description: Max results
+      responses:
+        200:
+          description: List of nearby POIs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/POIResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        400:
+          $ref: "#/components/responses/BadRequest"
+
+  /pois/{id}:
+    get:
+      tags: [POI]
+      summary: Get POI detail
+      description: Retrieve detailed information about a POI in specified language
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: POI ID
+        - name: lang
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [vi, en, fr, zh, ja]
+            example: "en"
+          description: Language code
+      responses:
+        200:
+          description: POI detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/POIResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        400:
+          $ref: "#/components/responses/BadRequest"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  # ========================
+  # PUBLIC TOUR ENDPOINTS
+  # ========================
+
+  /tours:
+    get:
+      tags: [Tour]
+      summary: Get all tours
+      description: Retrieve all available tours
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        200:
+          description: List of tours
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          count:
+                            type: integer
+                          results:
+                            type: array
+                            items:
+                              $ref: "#/components/schemas/TourResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+
+  /tours/{id}:
+    get:
+      tags: [Tour]
+      summary: Get tour detail
+      description: Get tour with all POIs in specified language
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Tour ID
+        - name: lang
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [vi, en, fr, zh, ja]
+            example: "en"
+          description: Language code
+      responses:
+        200:
+          description: Tour detail with POIs
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/TourDetailResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        400:
+          $ref: "#/components/responses/BadRequest"
+        404:
+          $ref: "#/components/responses/NotFound"
+
+  # ========================
+  # SUBSCRIPTION
+  # ========================
+
+  /subscription:
+    get:
+      tags: [Subscription]
+      summary: Get current subscription
+      description: Retrieve current subscription status for authenticated user
+      security:
+        - bearerAuth: []
+      responses:
+        200:
+          description: Current subscription info
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SubscriptionResponse"
+                      message:
+                        type: string
+                        example: Success
+                      status:
+                        type: integer
+                        example: 200
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        404:
+          description: No active subscription
+
+  /subscription/subscribe:
+    post:
+      tags: [Subscription]
+      summary: Create subscription
+      description: Subscribe to a plan
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id, payment_method]
+              properties:
+                plan_id:
+                  type: string
+                  description: Subscription plan ID
+                payment_method:
+                  type: string
+                  enum: [momo, zalopay, stripe, other]
+                  example: "stripe"
+                  description: Payment method
+      responses:
+        201:
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiResponse"
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/SubscriptionResponse"
+                      message:
+                        type: string
+                        example: Subscription created successfully
+                      status:
+                        type: integer
+                        example: 201
+        400:
+          $ref: "#/components/responses/BadRequest"
+        401:
+          $ref: "#/components/responses/Unauthorized"
+        404:
+          description: Plan not found
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from login endpoint
+
+  responses:
+    BadRequest:
+      description: Bad request - Invalid parameters or malformed request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Invalid request parameters"
+              details:
+                type: object
+
+    Unauthorized:
+      description: Unauthorized - Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Unauthorized"
+              message:
+                type: string
+                example: "Missing or invalid token"
+
+    Forbidden:
+      description: Forbidden - User lacks permission for this action
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Permission denied"
+              message:
+                type: string
+                example: "Only admin users can perform this action"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Not found"
+              message:
+                type: string
+                example: "Resource does not exist"
+
+  schemas:
+    ApiResponse:
+      type: object
+      description: Generic API response wrapper implementing ApiResponse<T> interface
+      required: [data, message, status]
+      properties:
+        status:
+          type: integer
+          description: HTTP status code
+          example: 200
+        message:
+          type: string
+          description: Human-readable message
+          example: Success
+        data:
+          description: Response data payload (type varies by endpoint)
+
+    UserResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique user ID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        email:
+          type: string
+          format: email
+          description: User email address
+          example: "user@example.com"
+        role:
+          type: string
+          enum: [admin, tourist]
+          description: User role
+          example: "tourist"
+        created_at:
+          type: string
+          format: date-time
+          description: Account creation timestamp
+        is_active:
+          type: boolean
+          description: Whether account is active
+          example: true
+
+    POIResponse:
+      type: object
+      required: [id, name, description, latitude, longitude, type, slug, image]
+      properties:
+        id:
+          type: string
+          description: Unique POI ID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        name:
+          type: string
+          description: POI name in requested language
+          example: "Hanoian Museum"
+        description:
+          type: string
+          description: POI description in requested language
+          example: "A historic museum showcasing Hanoi's rich history"
+        audio:
+          type: string
+          format: uri
+          nullable: true
+          description: Audio narration URL in requested language
+          example: "https://cdn.example.com/pois/museum-en.mp3"
+        image:
+          type: string
+          format: uri
+          description: POI image URL
+          example: "https://cdn.example.com/pois/museum.jpg"
+        latitude:
+          type: number
+          format: double
+          description: GPS latitude
+          example: 21.0285
+        longitude:
+          type: number
+          format: double
+          description: GPS longitude
+          example: 105.8542
+        type:
+          type: string
+          enum: [food, drink, museum, park, historical, other]
+          description: POI category
+          example: "museum"
+        slug:
+          type: string
+          description: URL-friendly identifier
+          example: "hanoian-museum"
+        distance:
+          type: number
+          format: double
+          nullable: true
+          description: Distance from query location in meters (for nearby endpoint)
+          example: 250.5
+
+    POIDetailResponse:
+      allOf:
+        - $ref: "#/components/schemas/POIResponse"
+        - type: object
+          properties:
+            radius:
+              type: integer
+              description: Geo-fence radius in meters
+              example: 50
+            status:
+              type: string
+              enum: [active, inactive]
+              description: POI status
+              example: "active"
+            default_lang:
+              type: string
+              description: Default language code
+              example: "vi"
+            created_at:
+              type: string
+              format: date-time
+              description: Creation timestamp
+            updated_at:
+              type: string
+              format: date-time
+              description: Last update timestamp
+
+    LocalizationResponse:
+      type: object
+      required: [id, poi_id, lang_code, name]
+      properties:
+        id:
+          type: string
+          description: Localization ID
+        poi_id:
+          type: string
+          description: Reference to POI
+        lang_code:
+          type: string
+          enum: [vi, en, fr, zh, ja]
+          description: Language code
+          example: "en"
+        name:
+          type: string
+          description: Localized POI name
+          example: "Museum in English"
+        description:
+          type: string
+          nullable: true
+          description: Localized description
+        audio:
+          type: string
+          format: uri
+          nullable: true
+          description: Localized audio URL
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TourResponse:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          description: Unique tour ID
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        name:
+          type: string
+          description: Tour name
+          example: "Historical Hanoi Tour"
+        description:
+          type: string
+          nullable: true
+          description: Tour description
+          example: "Explore the historical sites of Hanoi"
+        point_count:
+          type: integer
+          description: Number of POIs in tour
+          example: 5
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+
+    TourDetailResponse:
+      allOf:
+        - $ref: "#/components/schemas/TourResponse"
+        - type: object
+          properties:
+            pois:
+              type: array
+              description: Ordered list of POIs in the tour
+              items:
+                type: object
+                properties:
+                  position:
+                    type: integer
+                    description: Order in tour
+                    example: 1
+                  poi:
+                    $ref: "#/components/schemas/POIResponse"
+
+    TourPointResponse:
+      type: object
+      required: [id, tour_id, poi_id, position]
+      properties:
+        id:
+          type: string
+          description: Tour point ID
+        tour_id:
+          type: string
+          description: Tour reference
+        poi_id:
+          type: string
+          description: POI reference
+        position:
+          type: integer
+          description: Order position in tour
+          example: 1
+        created_at:
+          type: string
+          format: date-time
+
+    SubscriptionPlanResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Plan ID
+        title:
+          type: string
+          description: Plan name
+          example: "Premium"
+        price:
+          type: number
+          format: double
+          description: Monthly price
+          example: 9.99
+        features:
+          type: array
+          items:
+            type: string
+          description: Plan features
+          example: ["Offline downloads", "Ad-free", "Priority support"]
+
+    SubscriptionResponse:
+      type: object
+      required: [id, user_id, plan, status, created_at]
+      properties:
+        id:
+          type: string
+          description: Subscription ID
+        user_id:
+          type: string
+          description: User ID
+        plan:
+          $ref: "#/components/schemas/SubscriptionPlanResponse"
+        status:
+          type: string
+          enum: [active, expired, failed, cancelled]
+          description: Subscription status
+          example: "active"
+        created_at:
+          type: string
+          format: date-time
+          description: Subscription start date
+        expired_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Subscription expiry date
+        payment_method:
+          type: string
+          enum: [momo, zalopay, stripe, other]
+          description: Payment method used
+          example: "stripe"
+        amount:
+          type: number
+          format: double
+          description: Payment amount
+          example: 9.99
+        auto_renew:
+          type: boolean
+          description: Whether subscription auto-renews
+          default: true

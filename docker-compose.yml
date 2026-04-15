@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # 1. Dịch vụ Database (MySQL)
+  db:
+    image: mysql:8.0
+    container_name: project_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: my_django_db
+      MYSQL_USER: my_db_user
+      MYSQL_PASSWORD: my_super_secret_password
+      MYSQL_ROOT_PASSWORD: my_root_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  # 2. Dịch vụ Redis (Giữ nguyên cấu hình của bạn)
+  redis:
+    image: redis:7-alpine
+    container_name: project_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    restart: unless-stopped
+
+  # 3. Dịch vụ Web (Django)
+  web:
+    build: . # Yêu cầu Docker compose tự động build image từ Dockerfile hiện tại
+    container_name: gps_server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+      - redis
+    environment:
+      # Truyền biến môi trường vào Django (Bạn cần cấu hình settings.py để đọc các biến này)
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=my_django_db
+      - DB_USER=my_db_user
+      - DB_PASSWORD=my_super_secret_password
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - .:/app # Mount code từ máy thật vào container để dev tiện hơn
+  # huey_worker:
+  #   build: . 
+  #   container_name: project_huey_worker
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - db
+  #     - redis
+  #   environment:
+  #     - DB_HOST=db
+  #     - DB_PORT=3306
+  #     - DB_NAME=my_django_db
+  #     - DB_USER=my_db_user
+  #     - DB_PASSWORD=my_super_secret_password
+  #     - REDIS_HOST=redis
+  #   # Lệnh chạy worker của Huey thay vì chạy web server
+  #   command: python manage.py run_huey
+  #   volumes:
+  #     - .:/app
+
+volumes:
+  redis_data:
+  mysql_data: # Khai báo thêm volume cho MySQL để không bị mất data khi tắt container
