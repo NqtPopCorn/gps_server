@@ -17,6 +17,8 @@ from django.db import transaction
 from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
+from datetime import date, datetime, time, timedelta
+from django.utils.timezone import make_aware
 
 logger = logging.getLogger(__name__)
 
@@ -64,88 +66,84 @@ def _fail(job, exc: Exception):
     return job
 
 
-# ─── job: aggregate_daily_visits ─────────────────────────────────────────────
+# ── Tách logic thuần ra helper, không cần BatchJob ──────────────────────────
 
-def aggregate_daily_visits(job, target_date: date | None = None):
-    """
-    Aggregate History rows into DailyVisitStat.
-    Default: yesterday (so a nightly run always covers the previous full day).
-    Pass `target_date` to back-fill any specific date.
-    """
+def _do_aggregate_visits(target_date: date) -> dict:
+    """Core logic: aggregate History → DailyVisitStat cho một ngày cụ thể."""
     _, DailyVisitStat, _ = _models()
     History = _history()
 
-    _start(job)
-    try:
-        if target_date is None:
-            target_date = date.today() - timedelta(days=1)
+    # Fix: dùng aware datetime thay vì date thuần
+    start = make_aware(datetime.combine(target_date, time.min))
+    end   = make_aware(datetime.combine(target_date, time.max))
 
-        end_date = target_date + timedelta(days=1)
+    rows = (
+        History.objects
+        .filter(created_at__gte=start, created_at__lte=end)
+        .values("poi_id")
+        .annotate(visits=Count("id"))
+    )
 
-        rows = (
-            History.objects
-            .filter(created_at__gte=target_date, created_at__lt=end_date )
-            .values("poi_id")
-            .annotate(visits=Count("id"))
-        )
+    created = updated = 0
+    with transaction.atomic():
+        for row in rows:
+            _, was_created = DailyVisitStat.objects.update_or_create(
+                date=target_date,
+                poi_id=row["poi_id"],
+                defaults={"visits": row["visits"]},
+            )
+            if was_created:
+                created += 1
+            else:
+                updated += 1
 
-        created = updated = 0
-        with transaction.atomic():
-            for row in rows:
-                _, was_created = DailyVisitStat.objects.update_or_create(
-                    date=target_date,
-                    poi_id=row["poi_id"],
-                    defaults={"visits": row["visits"]},
-                )
-                if was_created:
-                    created += 1
-                else:
-                    updated += 1
-
-        return _finish(job, {
-            "target_date": target_date.isoformat(),
-            "rows_created": created,
-            "rows_updated": updated,
-        })
-    except Exception as exc:
-        return _fail(job, exc)
+    return {"target_date": target_date.isoformat(), "rows_created": created, "rows_updated": updated}
 
 
-# ─── job: aggregate_daily_revenue ────────────────────────────────────────────
-
-def aggregate_daily_revenue(job, target_date: date | None = None):
-    """
-    Aggregate successful Invoice rows into DailyRevenueStat.
-    Default: yesterday.
-    """
+def _do_aggregate_revenue(target_date: date) -> dict:
+    """Core logic: aggregate Invoice → DailyRevenueStat cho một ngày cụ thể."""
     _, _, DailyRevenueStat = _models()
     Invoice = _invoice()
 
+    # Fix: dùng aware datetime
+    start = make_aware(datetime.combine(target_date, time.min))
+    end   = make_aware(datetime.combine(target_date, time.max))
+
+    total = (
+        Invoice.objects
+        .filter(status=Invoice.Status.SUCCESS, paid_at__gte=start, paid_at__lte=end)
+        .aggregate(total=Sum("amount"))["total"]
+    ) or 0
+
+    with transaction.atomic():
+        _, was_created = DailyRevenueStat.objects.update_or_create(
+            date=target_date,
+            defaults={"revenue": total},
+        )
+
+    return {"target_date": target_date.isoformat(), "revenue": float(total), "was_created": was_created}
+
+
+# ── Job wrappers giờ chỉ gọi lại helper ──────────────────────────────────────
+
+def aggregate_daily_visits(job, target_date: date | None = None):
     _start(job)
     try:
         if target_date is None:
             target_date = date.today() - timedelta(days=1)
-
-        total = (
-            Invoice.objects
-            .filter(status=Invoice.Status.SUCCESS, paid_at__gte=target_date, paid_at__lt=target_date + timedelta(days=1))
-            .aggregate(total=Sum("amount"))["total"]
-        ) or 0
-
-        with transaction.atomic():
-            stat, was_created = DailyRevenueStat.objects.update_or_create(
-                date=target_date,
-                defaults={"revenue": total},
-            )
-
-        return _finish(job, {
-            "target_date": target_date.isoformat(),
-            "revenue": float(total),
-            "was_created": was_created,
-        })
+        return _finish(job, _do_aggregate_visits(target_date))
     except Exception as exc:
         return _fail(job, exc)
 
+
+def aggregate_daily_revenue(job, target_date: date | None = None):
+    _start(job)
+    try:
+        if target_date is None:
+            target_date = date.today() - timedelta(days=1)
+        return _finish(job, _do_aggregate_revenue(target_date))
+    except Exception as exc:
+        return _fail(job, exc)
 
 # ─── job: cleanup_old_history ─────────────────────────────────────────────────
 
@@ -209,7 +207,6 @@ def sync_poi_status(job):
         })
     except Exception as exc:
         return _fail(job, exc)
-
 
 # ─── registry ─────────────────────────────────────────────────────────────────
 # Maps job_name string → callable(job, **kwargs)

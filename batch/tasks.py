@@ -31,21 +31,20 @@ def execute_job_async(job_id: str, **kwargs):
         logger.error(f"[Huey] Job {job_name} not found in registry")
 
 # Chạy lúc 00:05 hàng ngày UTC+7
-@periodic_task(crontab(minute='05', hour='7'))
+@periodic_task(crontab(minute='05', hour='07'))
 def schedule_aggregate_daily_visits():
     from batch.models import BatchJob
     from batch.jobs import aggregate_daily_visits
+    from batch.queue import enqueue_job
     
-    # Tự động tạo record
-    job = BatchJob.objects.create(job_name="aggregate_daily_visits", triggered_by="huey_scheduler")
-    aggregate_daily_visits(job)
+    enqueue_job("aggregate_daily_visits", triggered_by="huey_scheduler")
     logger.info("Huey tự động chạy job: aggregate_daily_visits")
 
 # Chạy lúc 00:10 hàng ngày UTC+7
-@periodic_task(crontab(minute='10', hour='7'))
+@periodic_task(crontab(minute='10', hour='07'))
 def schedule_aggregate_daily_revenue():
     from batch.models import BatchJob
     from batch.jobs import aggregate_daily_revenue
+    from batch.queue import enqueue_job
     
-    job = BatchJob.objects.create(job_name="aggregate_daily_revenue", triggered_by="huey_scheduler")
-    aggregate_daily_revenue(job)
+    enqueue_job("aggregate_daily_revenue", triggered_by="huey_scheduler")

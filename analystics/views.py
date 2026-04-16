@@ -19,9 +19,10 @@ from payments.models import Invoice
 from pois.models import Poi, LocalizedData
 from tours.models import TourPoint
 from batch.models import DailyVisitStat, DailyRevenueStat
+from django.db.models import Count, DateField
+from django.db.models.functions import Cast
 
 from core.reponse_schema import api_response
-
 
 # ─── HELPERS ────────────────────────────────────────────────────────────────
 
@@ -67,19 +68,20 @@ def _apply_pure_date_filter(qs, field, from_date, to_date):
         qs = qs.filter(**{f"{field}__lte": to_date})
     return qs
 
-
 # ─── ADMIN ─────────────────────────────────────────────────────────────────
 
 class AdminOverviewView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        total_users = User.objects.count()
-        total_pois = Poi.objects.count()
+        from batch.jobs import _do_aggregate_visits, _do_aggregate_revenue
+        _do_aggregate_visits(date.today())
+        _do_aggregate_revenue(date.today())
         
-        # Lấy tổng từ bảng Batch (cực nhanh)
-        total_visits = DailyVisitStat.objects.aggregate(total=Sum("visits"))["total"] or 0
-        revenue = DailyRevenueStat.objects.aggregate(total=Sum("revenue"))["total"] or 0
+        total_users = User.objects.count()
+        total_pois  = Poi.objects.count()
+        total_visits = DailyVisitStat.objects.filter(date=date.today()).aggregate(total=Sum("visits"))["total"] or 0
+        revenue      = DailyRevenueStat.objects.filter(date=date.today()).aggregate(total=Sum("revenue"))["total"] or 0
 
         return api_response(data={
             "totalUsers": total_users,
@@ -87,7 +89,6 @@ class AdminOverviewView(APIView):
             "totalVisits": total_visits,
             "totalRevenue": revenue,
         })
-
 
 class AdminVisitsView(APIView):
     permission_classes = [IsAdminUser]
@@ -238,7 +239,7 @@ class AdminActiveUsersView(APIView):
         qs = _apply_date_filter(qs, "created_at", from_date, to_date)
 
         rows = (
-            qs.annotate(date=TruncDate("created_at"))
+            qs.annotate(date=Cast("created_at", output_field=DateField()))
             .values("date")
             .annotate(users=Count("user_id", distinct=True))
             .order_by("date")
@@ -258,20 +259,20 @@ class PartnerOverviewView(APIView):
     permission_classes = [IsPartnerUser]
 
     def get(self, request):
+
         poi_ids = Poi.objects.filter(owner=request.user).values_list("id", flat=True)
 
-        # Lấy tổng visits từ batch. (Lưu ý: uniqueUsers vẫn phải quét History vì Batch chưa lưu unique user)
-        total_visits = DailyVisitStat.objects.filter(poi_id__in=poi_ids).aggregate(total=Sum("visits"))["total"] or 0
-        
-        unique_users = History.objects.filter(poi_id__in=poi_ids).aggregate(
-            users=Count("user_id", distinct=True)
-        )["users"] or 0
-
-        return api_response(data={
-            "totalVisits": total_visits,
-            "uniqueUsers": unique_users,
-        })
-
+        total_visits = (
+            History.objects
+            .filter(poi_id__in=poi_ids)
+            .aggregate(total=Count("id"))["total"] or 0
+        )
+        unique_users = (
+            History.objects
+            .filter(poi_id__in=poi_ids)
+            .aggregate(users=Count("user_id", distinct=True))["users"] or 0
+        )
+        return api_response(data={"totalVisits": total_visits, "uniqueUsers": unique_users})
 
 class PartnerVisitsView(APIView):
     permission_classes = [IsPartnerUser]
@@ -296,7 +297,6 @@ class PartnerVisitsView(APIView):
 
         return api_response(data=data)
 
-
 class PartnerPoisPerformanceView(APIView):
     permission_classes = [IsPartnerUser]
 
@@ -309,65 +309,15 @@ class PartnerPoisPerformanceView(APIView):
         qs = DailyVisitStat.objects.filter(poi_id__in=poi_ids)
         qs = _apply_pure_date_filter(qs, "date", from_date, to_date)
 
-        rows = (
-            qs.values("poi_id")
-            .annotate(total_visits=Sum("visits"))
-        )
-
+        rows = qs.values("poi_id").annotate(total_visits=Sum("visits"))
         visits_map = {r["poi_id"]: r["total_visits"] for r in rows}
 
-        # Logic query name_map giữ nguyên
         locs = LocalizedData.objects.filter(poi_id__in=poi_ids, lang_code=lang).values("poi_id", "name")
         name_map = {l["poi_id"]: l["name"] for l in locs}
 
         data = [
-            {
-                "poiId": pid,
-                "name": name_map.get(pid, ""),
-                "visits": visits_map.get(pid, 0),
-            }
+            {"poiId": pid, "name": name_map.get(pid, ""), "visits": visits_map.get(pid, 0)}
             for pid in poi_ids
         ]
-
         data.sort(key=lambda x: x["visits"], reverse=True)
-
-        return api_response(data=data)
-    permission_classes = [IsPartnerUser]
-
-    def get(self, request):
-        lang = request.query_params.get("lang", "vi")
-        from_date, to_date = _parse_date_range(request)
-
-        poi_ids = list(
-            Poi.objects.filter(owner=request.user).values_list("id", flat=True)
-        )
-
-        qs = History.objects.filter(poi_id__in=poi_ids)
-        qs = _apply_date_filter(qs, "created_at", from_date, to_date)
-
-        rows = (
-            qs.values("poi_id")
-            .annotate(visits=Count("id"))
-        )
-
-        visits_map = {r["poi_id"]: r["visits"] for r in rows}
-
-        locs = (
-            LocalizedData.objects
-            .filter(poi_id__in=poi_ids, lang_code=lang)
-            .values("poi_id", "name")
-        )
-        name_map = {l["poi_id"]: l["name"] for l in locs}
-
-        data = [
-            {
-                "poiId": pid,
-                "name": name_map.get(pid, ""),
-                "visits": visits_map.get(pid, 0),
-            }
-            for pid in poi_ids
-        ]
-
-        data.sort(key=lambda x: x["visits"], reverse=True)
-
         return api_response(data=data)
