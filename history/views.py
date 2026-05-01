@@ -1,3 +1,4 @@
+from accounts.permissions import HasDeviceId
 from django.contrib.auth.models import AnonymousUser
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
@@ -8,10 +9,12 @@ from .serializers import CreateHistorySerializer, HistorySerializer
 from .models import History
 from core.reponse_schema import api_response, api_response_schema
 from django.utils import timezone
+from django.db.models import Q
+
 
 
 class HistoryView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [HasDeviceId]
 
     @extend_schema(
         tags=["History"],
@@ -34,7 +37,7 @@ class HistoryView(APIView):
         if not serializer.is_valid():
             return api_response(serializer.errors, "Invalid data", 400)
 
-        device_id = serializer.validated_data.get("device_id")
+        device_id = request.device_id
 
         user = request.user
         if(isinstance(user, AnonymousUser)):
@@ -76,9 +79,16 @@ class HistoryView(APIView):
     def get(self, request):
         lang_code = request.query_params.get("lang_code", "vi")
 
+        device_id = request.device_id
+        user = request.user if not isinstance(request.user, AnonymousUser) else None
+
         histories = (
             History.objects
-            .filter(user=request.user)
+            .filter(device_id=device_id)
+            .order_by("-created_at")[:20]
+        ) if user is None else (
+            History.objects
+            .filter(user=user)
             .order_by("-created_at")[:20]
         )
 

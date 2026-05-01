@@ -19,6 +19,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'paid_at',
             'created_at',
             'updated_at',
+            'reference_id',
         ]
         read_only_fields = [
             'id',
@@ -29,6 +30,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'paid_at',
             'created_at',
             'updated_at',
+            'reference_id',
         ]
 
     def get_user_email(self, obj: Invoice) -> str | None:
@@ -46,4 +48,9 @@ class BuyPoiCreditSerializer(serializers.Serializer):
     Frontend chỉ cần POST không cần body – amount và reason tự động điền.
     """
     pass
+
+class PayForStartTourSerializer(serializers.Serializer):
+    """Serializer dùng cho endpoint trả tiền để bắt đầu tour.
+    """
+    tourId = serializers.CharField(required=True)
 

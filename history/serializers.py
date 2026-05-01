@@ -5,7 +5,6 @@ from pois.serializers import POISerializer
 
 class CreateHistorySerializer(serializers.Serializer):
     poi_id = serializers.UUIDField(required=True)
-    device_id = serializers.CharField(required=True)
 
 class HistorySerializer(serializers.ModelSerializer):
     poi = POISerializer()

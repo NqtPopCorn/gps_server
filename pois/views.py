@@ -1,3 +1,5 @@
+
+from rest_framework import serializers
 from rest_framework.permissions import IsAuthenticated
 import math
 from rest_framework.views import APIView
@@ -25,80 +27,278 @@ from pois.services import get_poi_queryset, paginate_queryset
 from accounts.models import User
 from accounts.permissions import IsPartnerUser
 from django.db import transaction
+from django.core.cache import cache
 
 from core.reponse_schema import api_response, api_response_schema, api_pagination_response_schema, build_url
 
 # ─── PUBLIC ENDPOINTS ────────────────────────────────────────────────────────
 
-class POINearbyView(APIView):
+# def _zoom_to_limit(zoom: int) -> int:
+#     """Limit POI count theo zoom level để tránh lag."""
+#     if zoom <= 11:   return 15
+#     elif zoom <= 13: return 40
+#     elif zoom <= 15: return 100
+#     else:            return 300  # zoom sát đất, hiện gần hết
+
+# class POINearbyView(APIView):
+#     permission_classes = [AllowAny]
+
+#     # /api/pois/nearby
+#     @extend_schema(
+#         tags=["POI"],
+#         summary="Get nearby POIs",
+#         description=(
+#             "Retrieve active Points of Interest near a given GPS coordinate. "
+#         ),
+#         parameters=[
+#             OpenApiParameter("min_lat", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
+#                              description="Minimum latitude of the search area"),
+#             OpenApiParameter("min_lng", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
+#                              description="Minimum longitude of the search area"),
+#             OpenApiParameter("max_lat", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
+#                              description="Maximum latitude of the search area"),
+#             OpenApiParameter("max_lng", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
+#                              description="Maximum longitude of the search area"),
+#             OpenApiParameter("zoom", OpenApiTypes.INT, OpenApiParameter.QUERY, required=True,
+#                             description="zoom of the search area"),
+#             OpenApiParameter("lang", OpenApiTypes.STR, OpenApiParameter.QUERY, required=True,
+#                              description="Language code for localized content",
+#                              enum=["vi", "en", "fr", "zh", "ja"]),
+#         ],
+#         responses={
+#             200: OpenApiResponse(response=api_response_schema("POINearbyResponse", POISerializer(many=True)), description="List of nearby POIs"),
+#             400: OpenApiResponse(description="Missing or invalid query parameters"),
+#         },
+#     )
+#     def get(self, request):
+#         # 1. Parse params
+#         min_lat = request.query_params.get("min_lat")
+#         min_lng = request.query_params.get("min_lng")
+#         max_lat = request.query_params.get("max_lat")
+#         max_lng = request.query_params.get("max_lng")
+#         zoom_str = request.query_params.get("zoom")
+#         lang     = request.query_params.get("lang", "vi")
+
+#         try:
+#             min_lat = float(min_lat)
+#             min_lng = float(min_lng)
+#             max_lat = float(max_lat)
+#             max_lng = float(max_lng)
+#             zoom = int(zoom_str)
+#         except (ValueError, TypeError) as exc:
+#             return Response(
+#                 {"error": f"Invalid bbox or zoom: {exc}"},
+#                 status=status.HTTP_400_BAD_REQUEST,
+#             )
+
+#         # Limit theo zoom
+#         limit = _zoom_to_limit(zoom)
+
+#         # normalize bbox
+#         def norm(v): return round(v, 3)
+
+#         cache_key = f"poi:{norm(min_lat)}:{norm(min_lng)}:{norm(max_lat)}:{norm(max_lng)}:{zoom}:{lang}"
+
+#         cached = cache.get(cache_key)
+#         if cached:
+#             return api_response(data=cached)
+
+#         qs = (
+#             Poi.objects
+#             .filter(
+#                 status="active",
+#                 latitude__gte=min_lat,
+#                 latitude__lte=max_lat,
+#                 longitude__gte=min_lng,
+#                 longitude__lte=max_lng,
+#             )
+#             .prefetch_related("localized_data")
+#             .order_by("type", "slug")
+#             [:limit]
+#         )
+
+#         data = POISerializer(qs, many=True, context={"lang": lang}).data
+
+#         cache.set(cache_key, data, timeout=60*60)
+        
+#         return api_response(data=data)
+
+import h3 as h3lib                        # pip install h3
+
+# ---------------------------------------------------------------------------
+# Resolution → H3 child-expansion resolution cap
+#
+# The FE sends cells at whatever zoom resolution is currently visible.
+# POIs are stored on the model with h3_index at RESOLUTION 9.
+#
+# Rule:
+#   query_res <= POI_STORAGE_RES  →  expand to children at POI_STORAGE_RES
+#   query_res >  POI_STORAGE_RES  →  climb to parent at POI_STORAGE_RES
+#
+# The RESOLUTION_ROW_LIMIT table gives a DB-row guard per resolution so that
+# a single coarse cell cannot return an unbounded result set.
+# ---------------------------------------------------------------------------
+
+POI_STORAGE_RESOLUTION: int = 8         # resolution used when h3_index was written
+
+RESOLUTION_ROW_LIMIT: dict[int, int] = {
+    1: 5000,
+    2: 3000,
+    3: 2000,
+    4: 1000,
+    5: 500,
+    6: 200,
+    7: 100,
+    8: 50,
+    9: 20,
+    10: 10,
+    11: 10,
+    12: 10,
+    13: 10,
+    14: 10,
+    15: 10,
+}
+
+H3_CACHE_TTL: int = 5 * 60              # seconds – tune to your cache backend
+
+
+def _get_pois_for_cell(cell: str, lang: str):
+    """
+    Return a serialized list of active POIs that fall inside *cell*.
+
+    Strategy
+    --------
+    1. Resolve the cell to resolution POI_STORAGE_RESOLUTION so we can match
+       against the stored h3_index column directly.
+       - coarser cell  (res < 9) → expand to children at res-9
+       - same or finer (res ≥ 9) → climb to the parent at res-9
+    2. Filter Poi by h3_index__in (children) or h3_index == parent.
+    3. Apply a row cap derived from the cell's resolution to avoid huge payloads.
+    """
+    try:
+        resolution: int = h3lib.get_resolution(cell)
+    except Exception:
+        return []                          # invalid cell index → return empty
+
+    row_limit: int = RESOLUTION_ROW_LIMIT.get(resolution, 50)
+    
+
+    if resolution < POI_STORAGE_RESOLUTION:
+        # Expand: get all res-9 children that belong to this coarser cell.
+        # h3.h3_to_children returns a SET; cast to list for the ORM.
+        storage_cells = list(h3lib.cell_to_children(cell, POI_STORAGE_RESOLUTION))
+        qs = (
+            Poi.objects
+            .filter(h3_index__in=storage_cells, status="active")
+            .prefetch_related("localized_data")
+            [:row_limit]
+        )
+    elif resolution == POI_STORAGE_RESOLUTION:
+        qs = (
+            Poi.objects
+            .filter(h3_index=cell, status="active")
+            .prefetch_related("localized_data")
+            [:row_limit]
+        )
+    else:
+        # Query cell is finer than storage resolution → climb up to res-9 parent.
+        parent_cell = h3lib.cell_to_parent(cell, POI_STORAGE_RESOLUTION)
+        qs = (
+            Poi.objects
+            .filter(h3_index=parent_cell, status="active")
+            .prefetch_related("localized_data")
+            [:row_limit]
+        )
+
+    return list(POISerializer(qs, many=True, context={"lang": lang}).data)
+
+
+class POIByH3CellsView(APIView):
+    """
+    POST /api/pois/h3-batch/
+
+    Body
+    ----
+    {
+        "cells": ["8928308280fffff", "8928308281fffff", ...],
+        "lang":  "vi"
+    }
+
+    Response
+    --------
+    {
+        "8928308280fffff": [ ...pois... ],
+        "8928308281fffff": [],            # or omitted – both are valid
+        ...
+    }
+
+    Algorithm (mirrors FE pseudo-code)
+    -----------------------------------
+    for cell in cells:
+        if cache.has(cell, lang):
+            result[cell] = cache.get(cell, lang)
+        else:
+            res   = h3.h3_get_resolution(cell)
+            limit = RESOLUTION_ROW_LIMIT[res]
+            pois  = findPOIInsideHex(cell, limit, lang)
+            cache.set(cell, lang, pois)
+            result[cell] = pois
+    return result
+    """
+
     permission_classes = [AllowAny]
 
     @extend_schema(
         tags=["POI"],
-        summary="Get nearby POIs",
+        summary="Batch-fetch POIs by H3 cell indexes",
         description=(
-            "Retrieve active Points of Interest near a given GPS coordinate. "
+            "Accept a list of H3 cell indexes and return all active POIs grouped "
+            "by cell index.  Results are cached per cell+language for 5 minutes."
         ),
-        parameters=[
-            OpenApiParameter("lat", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
-                             description="Latitude coordinate"),
-            OpenApiParameter("lng", OpenApiTypes.FLOAT, OpenApiParameter.QUERY, required=True,
-                             description="Longitude coordinate"),
-            OpenApiParameter("lang", OpenApiTypes.STR, OpenApiParameter.QUERY, required=True,
-                             description="Language code for localized content",
-                             enum=["vi", "en", "fr", "zh", "ja"]),
-            OpenApiParameter("radius", OpenApiTypes.INT, OpenApiParameter.QUERY, required=False,
-                             description="Search radius in meters (default: 5000)"),
-            # OpenApiParameter("limit", OpenApiTypes.INT, OpenApiParameter.QUERY, required=False,
-            #                  description="Max number of results (default: 20, max: 100)"),
-        ],
+        request=inline_serializer(
+            name="H3BatchRequest",
+            fields={
+                "cells": serializers.ListSerializer(child=serializers.CharField()),
+                "lang": serializers.ChoiceField(choices=["vi", "en", "fr", "zh", "ja"]),
+            },
+        ),
         responses={
-            200: OpenApiResponse(response=api_response_schema("POINearbyResponse", POISerializer(many=True)), description="List of nearby POIs"),
-            400: OpenApiResponse(description="Missing or invalid query parameters"),
+            200: OpenApiResponse(description="Map of { h3_index: POI[] }"),
+            400: OpenApiResponse(description="Missing or invalid request body"),
         },
     )
-    def get(self, request):
-        try:
-            lat = float(request.query_params.get('lat'))
-            lng = float(request.query_params.get('lng'))
-        except (TypeError, ValueError):
-            return api_response(error="Invalid lat/lng", status=400)
+    def post(self, request):
+        cells = request.data.get("cells")
+        lang  = request.data.get("lang", "vi")
 
-        lang = request.query_params.get('lang', "vi")
-
-        radius = int(request.query_params.get('radius', 10000))
-        # limit = min(int(request.query_params.get('limit', 20)), 100)
-
-        # Convert meter → lat/lng delta
-        lat_delta = radius / 111_000
-
-        # 1 deg lng ≈ 111km * cos(lat)
-        lng_delta = radius / (111_000 * math.cos(math.radians(lat)))
-
-        min_lat = lat - lat_delta
-        max_lat = lat + lat_delta
-        min_lng = lng - lng_delta
-        max_lng = lng + lng_delta
-
-        # Build Query
-        qs = (
-            get_poi_queryset(lang, None)
-            .filter(
-                latitude__gte=min_lat,
-                latitude__lte=max_lat,
-                longitude__gte=min_lng,
-                longitude__lte=max_lng,
+        if not cells or not isinstance(cells, list):
+            return Response(
+                {"error": "cells must be a non-empty list of H3 index strings"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        )
 
-        # Run query
-        data = POISerializer(
-            qs,
-            many=True,
-            context={'lang': lang},
-        ).data
+        result: dict = {}
 
-        return api_response(data=data)
+        for cell in cells:
+            if not isinstance(cell, str):
+                result[cell] = []
+                continue
+
+            cache_key = f"h3_pois__{cell}__{lang}"
+            cached    = cache.get(cache_key)
+
+            if cached is not None:
+                result[cell] = cached
+                continue
+
+            # ── core lookup ──────────────────────────────────────────────────
+            pois_data = _get_pois_for_cell(cell, lang)
+            # ─────────────────────────────────────────────────────────────────
+
+            cache.set(cache_key, pois_data, timeout=H3_CACHE_TTL)
+            result[cell] = pois_data
+
+        return api_response(data=result)
 
 class POISearchView(APIView):
     permission_classes = [AllowAny]

@@ -121,3 +121,11 @@ class UpdatePOISerializer(serializers.Serializer):
     )
     slug = serializers.SlugField(required=False, max_length=150)
     status = serializers.ChoiceField(choices=['active', 'inactive'], required=False)
+
+    def validate_slug(self, value):
+        if Poi.objects.filter(slug=value).exists():
+            raise serializers.ValidationError("Slug already exists")
+        return value
+
+
+

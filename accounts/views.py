@@ -1,3 +1,4 @@
+from history.services import syncHistory
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -51,6 +52,7 @@ class RegisterView(APIView):
                 return Response({"error": "Email already registered"}, status=status.HTTP_409_CONFLICT)
             return Response({"error": "Invalid request parameters", "details": errors},
                             status=status.HTTP_400_BAD_REQUEST)
+                            
         user = serializer.save()
         user_data = UserResponseSerializer(user).data
         return api_response(data=user_data, message="User registered successfully", http_status=201)
@@ -113,6 +115,12 @@ class LoginView(APIView):
             return Response({"error": "Invalid request parameters", "details": serializer.errors},
                             status=status.HTTP_400_BAD_REQUEST)
         user = serializer.validated_data['user']
+
+        # get device or fingerprint to sync history if exists
+        device_id = request.headers.get('X-Device-Id', None)
+        if(device_id):
+            syncHistory(user, device_id)
+
         token = AccessToken.for_user(user)
         user_data = UserResponseSerializer(user).data
         data = {
@@ -120,6 +128,8 @@ class LoginView(APIView):
             "token_type": "Bearer",
             "user": user_data,
         }
+
+
         return api_response(data=data, message="Login successful", http_status=200)
 
 class ProfileView(APIView):

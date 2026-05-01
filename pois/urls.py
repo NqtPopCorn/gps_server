@@ -1,16 +1,16 @@
 from django.urls import path
 from pois.views import (
-    POIDetailView, POISearchView, POINearbyView,
+    POIDetailView, POISearchView,
+    POIByH3CellsView,                          # ← new
     AdminPOIListCreateView, AdminPOIDetailView,
     AdminPOILocalizationView, AdminPOILocalizationDeleteView,
     # PartnerPOIListCreateView
-    
 )
 
 public_urlpatterns = [
-    path('nearby', POINearbyView.as_view(), name="poi-nearby"),
-    path('<str:slug>', POIDetailView.as_view(), name='poi-detail'),
-    path('search/', POISearchView.as_view(), name='poi-search'),
+    path('search/',     POISearchView.as_view(),        name='poi-search'),
+    path('h3-batch/',   POIByH3CellsView.as_view(),    name='poi-h3-batch'),  # ← new
+    path('<str:slug>',  POIDetailView.as_view(),        name='poi-detail'),   # keep last – catch-all
 ]
 
 partner_urlpatterns = [

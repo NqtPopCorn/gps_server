@@ -95,7 +95,7 @@ class TourDetailView(APIView):
         tour = get_object_or_404(
             Tour.objects.prefetch_related('tour_points__poi__localized_data'), pk=id
         )
-        data = TourDetailSerializer(tour, context={'lang': lang}).data
+        data = TourDetailSerializer(tour, context={'lang': lang, 'user': request.user}).data
         return api_response(data=data)
 
 from .models import Tour, TourActivationCode

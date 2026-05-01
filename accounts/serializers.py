@@ -15,6 +15,7 @@ class UserResponseSerializer(serializers.ModelSerializer):
         data['created_at'] = data.pop('date_joined')
         return data
 
+
 class RegisterSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(min_length=8, write_only=True)
@@ -31,6 +32,7 @@ class RegisterSerializer(serializers.Serializer):
             password=validated_data['password'],
             role=validated_data['role'],
         )
+
 
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()

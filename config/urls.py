@@ -7,9 +7,12 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 import accounts.urls as auth_urls
 import pois.urls as poi_urls
+# import config.routing as monitor_routing
+
 import tours.urls as tour_urls
 import history.urls as history_urls
 import analystics.urls as analytics_urls
+import monitor.urls as monitor_urls
 
 urlpatterns = [
     # Django admin
@@ -51,4 +54,7 @@ urlpatterns = [
 
     # Partner dashboard analytics: /api/partner/dashboard/...
     path('api/partner/dashboard/', include(analytics_urls.partner_urlpatterns)),
+
+    path('api/monitor/', include(monitor_urls)),
+    
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

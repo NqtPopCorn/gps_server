@@ -32,6 +32,20 @@ environ.Env.read_env(BASE_DIR / '.env')
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env('DJANGO_SECRET_KEY', default="django-insecure-sisx=9qba92uoru9q_q$bf*%383a=ca248#m@sn9!ns423wn)#")
 
+# CORS
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=[])
+AUTH_USER_MODEL = "accounts.User"
+CORS_ALLOW_ALL_ORIGINS = True
+
+CORS_ALLOW_HEADERS = [
+    "accept",
+    "authorization",
+    "content-type",
+    "user-agent",
+    "x-device-id", 
+    "x-csrftoken",
+]
+
 # PayPal Sandbox
 PAYPAL_CLIENT_ID = env('PAYPAL_CLIENT_ID', default='')
 PAYPAL_SECRET = env('PAYPAL_SECRET', default='')
@@ -49,18 +63,17 @@ cloudinary.config(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG')
 
-ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=["*"])
-
-
 # Application definition
 
 INSTALLED_APPS = [
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "channels",
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
@@ -164,9 +177,9 @@ MEDIA_ROOT = BASE_DIR / "media"
 # VNPay
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-AUTH_USER_MODEL = "accounts.User"
-
-CORS_ALLOW_ALL_ORIGINS = True
+# Redis
+REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
+REDIS_PORT = os.environ.get('REDIS_PORT', 6379)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -178,7 +191,13 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FormParser',
     ),
-    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler"
+    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+    'DEFAULT_THROTTLE_RATES': {
+        'heartbeat_limit': '3/min',
+    },
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
 }
 
 SPECTACULAR_SETTINGS = {
@@ -203,9 +222,30 @@ HUEY = {
     'name': 'project_batch_jobs',
     'connection': {
         # Đọc từ biến môi trường, nếu không có thì mặc định lấy 'redis'
-        'host': os.environ.get('REDIS_HOST', 'redis'),
-        'port': os.environ.get('REDIS_PORT', 6379),
+        'host': REDIS_HOST,
+        'port': REDIS_PORT,
         'db': 0,
     },
     'immediate': False, 
 }
+
+ASGI_APPLICATION = "config.asgi.application"
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [(REDIS_HOST, REDIS_PORT)]},
+    }
+}
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": f"redis://{REDIS_HOST}:{REDIS_PORT}/1",
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
+    }
+}
+
+

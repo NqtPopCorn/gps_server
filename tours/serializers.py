@@ -1,3 +1,5 @@
+from django.utils import timezone
+from payments.models import UserAvailableTour
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field, extend_schema_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -40,9 +42,12 @@ class TourPointSerializer(serializers.ModelSerializer):
 
 class TourDetailSerializer(TourSerializer):
     pois = serializers.SerializerMethodField()
+    can_start = serializers.SerializerMethodField()
+    price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    currency = serializers.CharField(max_length=3, read_only=True)
 
     class Meta(TourSerializer.Meta):
-        fields = TourSerializer.Meta.fields + ['pois']
+        fields = TourSerializer.Meta.fields + ['pois', 'can_start', 'price', 'currency']
 
     @extend_schema_field(TourPointDetailInlineSerializer(many=True))
     def get_pois(self, obj):
@@ -52,6 +57,13 @@ class TourDetailSerializer(TourSerializer):
             poi_data = POISerializer(tp.poi, context={**self.context, 'lang': lang}).data
             result.append({'position': tp.position, 'poi': poi_data})
         return result
+
+    @extend_schema_field(OpenApiTypes.BOOL)
+    def get_can_start(self, obj):
+        user = self.context.get('user')
+        if not user:
+            return False    
+        return UserAvailableTour.objects.filter(user=user, tour=obj, expired_at__gt=timezone.now()).exists()
 
 class AddTourPointSerializer(serializers.Serializer):
     poi_id = serializers.CharField()

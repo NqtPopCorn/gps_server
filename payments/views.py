@@ -1,3 +1,6 @@
+from payments.serializers import PayForStartTourSerializer
+from payments.models import UserAvailableTour
+from tours.models import Tour
 import requests
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
@@ -104,6 +107,35 @@ def buy_poi_credit(request: Request) -> Response:
     return Response(InvoiceSerializer(invoice).data, status=status.HTTP_201_CREATED)
 
 
+@extend_schema(
+    summary='Tạo Invoice để thanh toán lượt start tour',
+    description=(
+        'User gọi endpoint này để tạo hóa đơn thanh toán lượt start tour. '
+        'Sau đó dùng invoiceId trả về để gọi /paypal/create-order/ → /paypal/capture-order/. '
+        'Khi capture thanh toán PayPal thành công, upsert UserAvailableTour.'
+    ),
+    request=PayForStartTourSerializer,
+    responses={201: InvoiceSerializer},
+    tags=['payments'],
+)
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def pay_to_start_tour(request: Request) -> Response:
+    tour_id = request.data.get('tourId', '')
+    if not tour_id:
+        return Response({'error': 'tourId is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    tour = get_object_or_404(Tour, id=tour_id)
+
+    invoice = Invoice.objects.create(
+        user=request.user,
+        invoice_type=Invoice.Type.START_TOUR,
+        reason=f'Start Tour {tour.id}',
+        amount=Invoice.START_TOUR_PRICE,
+        reference_id=tour_id
+    )
+    return Response(InvoiceSerializer(invoice).data, status=status.HTTP_201_CREATED)
+
+
 # ──────────────────────────────────────────────
 # PayPal – Create Order
 # ──────────────────────────────────────────────
@@ -111,7 +143,7 @@ def buy_poi_credit(request: Request) -> Response:
 @extend_schema(
     summary='Tạo PayPal Order cho invoice',
     description=(
-        'Gọi PayPal API để khởi tạo order. Chuyển VND sang USD tự động nếu PayPal Sandbox trả về lỗi 422 (Currency Not Supported).'
+        'Tạo Order trên PayPal API'
     ),
     request=inline_serializer(
         name='PaypalCreateOrderRequest111',
@@ -211,6 +243,18 @@ def paypal_capture_order(request: Request, order_id: str) -> Response:
                     user.save(update_fields=['poi_credits'])
                     print(f"[Credit] Cấp {Invoice.POI_CREDIT_AMOUNT} POI credit cho {user.email}. "
                           f"Tổng hiện tại: {user.poi_credits}")
+
+                # Xử lý lưu avalable tour
+                if invoice.invoice_type == Invoice.Type.START_TOUR and invoice.user:
+                    tour_available, created = UserAvailableTour.objects.update_or_create(
+                        user=invoice.user,
+                        tour=get_object_or_404(Tour, id=invoice.reference_id),
+                        defaults={
+                            'expired_at': timezone.now() + timezone.timedelta(days=7)
+                        }
+                    )
+                    print(f"[UserAvailableTour] {'Updated' if not created else 'Created'} {tour_available}")
+
             else:
                 invoice.status = Invoice.Status.FAILED
                 invoice.transaction_code = order_id

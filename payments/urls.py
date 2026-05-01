@@ -8,6 +8,7 @@ urlpatterns = [
 
     # Credit System
     path('buy-poi-credit/', views.buy_poi_credit, name='buy-poi-credit'),
+    path('pay-to-start-tour/', views.pay_to_start_tour, name='pay-to-start-tour'),
 
     # PayPal
     path('paypal/create-order/', views.paypal_create_order, name='paypal-create-order'),

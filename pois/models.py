@@ -25,6 +25,7 @@ class Poi(models.Model):
     radius = models.IntegerField(default=50) # In meters
     latitude = models.FloatField()
     longitude = models.FloatField()
+    h3_index = models.CharField(max_length=16, db_index=True, default="1234567890")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='active')
     slug = models.SlugField(unique=True, max_length=150)
     created_at = models.DateTimeField(auto_now_add=True)
