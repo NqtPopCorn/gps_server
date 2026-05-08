@@ -24,7 +24,7 @@ def enqueue_job(job_name: str, triggered_by: str = "api", **kwargs):
     )
 
     # Đẩy tác vụ vào Huey queue
-    # Hàm task của Huey khi gọi sẽ trả về một Result object
+    # Hàm task của Huey khi gọi sẽ trả về một Result object nhờ vào magic của decorator @db_task
     huey_result = execute_job_async(job_record.id, **kwargs)
 
     return job_record, huey_result

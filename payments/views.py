@@ -1,12 +1,12 @@
-from payments.serializers import PayForStartTourSerializer
-from payments.models import UserAvailableTour
-from tours.models import Tour
+import json
+from venv import logger
 import requests
+
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, serializers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -14,14 +14,22 @@ from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema, extend_schema_view, inline_serializer
 from drf_spectacular import openapi
 
-from .models import Invoice
-from .serializers import InvoiceSerializer, InvoiceCreateSerializer, BuyPoiCreditSerializer
+# Models & Serializers
+from payments.models import Invoice, UserAvailableTour, WebhookEvent
+from payments.serializers import (
+    InvoiceSerializer, 
+    InvoiceCreateSerializer, 
+    BuyPoiCreditSerializer, 
+    PayForStartTourSerializer
+)
+from tours.models import Tour
+
+# Helpers & Tasks
 from . import paypal as paypal_helper
-from rest_framework import serializers
+from .tasks import process_webhook_event
 
-# Đảm bảo bạn đã import IsPartnerUser từ module tương ứng trong project
+# Permissions
 from accounts.permissions import IsPartnerUser
-
 
 
 # ──────────────────────────────────────────────
@@ -31,7 +39,7 @@ from accounts.permissions import IsPartnerUser
 @extend_schema_view(
     get=extend_schema(
         summary="Lấy danh sách hóa đơn",
-        description="Trả về danh sách hóa đơn của user hiện tại. Nếu role là admin sẽ trả về toàn bộ hóa đơn trên hệ thống.",
+        description="Trả về danh sách hóa đơn của user hiện tại. Nếu role là admin sẽ trả về toàn bộ.",
         responses={200: InvoiceSerializer(many=True)},
         tags=['invoices']
     ),
@@ -81,7 +89,7 @@ class InvoiceDetailView(generics.RetrieveAPIView):
 
 
 # ──────────────────────────────────────────────
-# Credit System – Mua lượt tạo POI
+# Credit System & Tours
 # ──────────────────────────────────────────────
 
 @extend_schema(
@@ -89,7 +97,7 @@ class InvoiceDetailView(generics.RetrieveAPIView):
     description=(
         'Partner gọi endpoint này để tạo hóa đơn mua POI credit. '
         'Sau đó dùng invoiceId trả về để gọi /paypal/create-order/ → /paypal/capture-order/. '
-        'Khi capture thanh toán PayPal thành công, poi_credits của user sẽ tự động +1.'
+        'Webhook sẽ tự động cộng credit khi thanh toán thành công.'
     ),
     request=BuyPoiCreditSerializer,
     responses={201: InvoiceSerializer},
@@ -111,8 +119,7 @@ def buy_poi_credit(request: Request) -> Response:
     summary='Tạo Invoice để thanh toán lượt start tour',
     description=(
         'User gọi endpoint này để tạo hóa đơn thanh toán lượt start tour. '
-        'Sau đó dùng invoiceId trả về để gọi /paypal/create-order/ → /paypal/capture-order/. '
-        'Khi capture thanh toán PayPal thành công, upsert UserAvailableTour.'
+        'Sau đó dùng invoiceId trả về để gọi /paypal/create-order/ → /paypal/capture-order/.'
     ),
     request=PayForStartTourSerializer,
     responses={201: InvoiceSerializer},
@@ -124,6 +131,7 @@ def pay_to_start_tour(request: Request) -> Response:
     tour_id = request.data.get('tourId', '')
     if not tour_id:
         return Response({'error': 'tourId is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    
     tour = get_object_or_404(Tour, id=tour_id)
 
     invoice = Invoice.objects.create(
@@ -137,16 +145,13 @@ def pay_to_start_tour(request: Request) -> Response:
 
 
 # ──────────────────────────────────────────────
-# PayPal – Create Order
+# PayPal – Create & Capture Order
 # ──────────────────────────────────────────────
 
 @extend_schema(
     summary='Tạo PayPal Order cho invoice',
-    description=(
-        'Tạo Order trên PayPal API'
-    ),
     request=inline_serializer(
-        name='PaypalCreateOrderRequest111',
+        name='PaypalCreateOrderRequest',
         fields={'invoiceId': serializers.UUIDField()},
     ),
     responses={
@@ -179,7 +184,6 @@ def paypal_create_order(request: Request) -> Response:
         }],
     }
 
-    # Thử VND trước; nếu PayPal trả 422 thì fallback sang USD (hữu ích trên môi trường Sandbox)
     try:
         result = paypal_helper.paypal_request('POST', '/v2/checkout/orders', json=payload)
     except requests.HTTPError as e:
@@ -197,19 +201,11 @@ def paypal_create_order(request: Request) -> Response:
     return Response(result)
 
 
-# ──────────────────────────────────────────────
-# PayPal – Capture Order
-# ──────────────────────────────────────────────
-
 @extend_schema(
     summary='Capture PayPal Order sau khi user approve',
     description=(
-        'Capture payment từ PayPal thông qua order_id. Cập nhật trạng thái invoice thành SUCCESS/FAILED. '
-        'Đặc biệt, nếu hóa đơn thuộc loại POI_CREDIT, cấp tự động credit cho user tương ứng.'
-    ),
-    request=inline_serializer(
-        name='PaypalCaptureOrderRequest',
-        fields={'invoiceId': serializers.UUIDField()},
+        'Endpoint này chỉ trigger việc capture từ phía frontend. '
+        'Toàn bộ logic cấp credit, cập nhật DB được xử lý bất đồng bộ thông qua Webhook.'
     ),
     responses={200: openapi.OpenApiTypes.OBJECT},
     tags=['payments'],
@@ -217,47 +213,61 @@ def paypal_create_order(request: Request) -> Response:
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def paypal_capture_order(request: Request, order_id: str) -> Response:
-    # Tìm invoice theo transaction_code (đã lưu ở bước create_order) hoặc invoiceId trong body gửi lên
-    invoice = Invoice.objects.filter(transaction_code=order_id).first()
-    if not invoice:
-        invoice_id = request.data.get('invoiceId', '')
-        if invoice_id:
-            invoice = Invoice.objects.filter(id=invoice_id, user=request.user).first()
-
+    """
+    Vì hệ thống đã chuyển sang dùng Webhook & Background Tasks, 
+    endpoint này chỉ đảm nhiệm việc gọi API capture. Nó không cập nhật DB.
+    """
     result = paypal_helper.paypal_request('POST', f"/v2/checkout/orders/{order_id}/capture")
-    pay_status = result.get('status', '')
-
-    if invoice:
-        with transaction.atomic():
-            if pay_status == 'COMPLETED':
-                invoice.status = Invoice.Status.SUCCESS
-                invoice.paid_at = timezone.now()
-                invoice.transaction_code = order_id
-                invoice.save(update_fields=['status', 'paid_at', 'transaction_code'])
-
-                # ── Cấp POI credit nếu đây là hóa đơn mua lượt ──
-                if invoice.invoice_type == Invoice.Type.POI_CREDIT and invoice.user:
-                    user = invoice.user
-                    # Tránh gán sai type, nên dùng toán tử cộng dồn
-                    user.poi_credits = getattr(user, 'poi_credits', 0) + Invoice.POI_CREDIT_AMOUNT
-                    user.save(update_fields=['poi_credits'])
-                    print(f"[Credit] Cấp {Invoice.POI_CREDIT_AMOUNT} POI credit cho {user.email}. "
-                          f"Tổng hiện tại: {user.poi_credits}")
-
-                # Xử lý lưu avalable tour
-                if invoice.invoice_type == Invoice.Type.START_TOUR and invoice.user:
-                    tour_available, created = UserAvailableTour.objects.update_or_create(
-                        user=invoice.user,
-                        tour=get_object_or_404(Tour, id=invoice.reference_id),
-                        defaults={
-                            'expired_at': timezone.now() + timezone.timedelta(days=7)
-                        }
-                    )
-                    print(f"[UserAvailableTour] {'Updated' if not created else 'Created'} {tour_available}")
-
-            else:
-                invoice.status = Invoice.Status.FAILED
-                invoice.transaction_code = order_id
-                invoice.save(update_fields=['status', 'transaction_code'])
-
     return Response(result)
+
+
+# ──────────────────────────────────────────────
+# PayPal – Webhook 
+# ──────────────────────────────────────────────
+
+@extend_schema(
+    summary='PayPal Webhook Endpoint',
+    description='Nhận events từ PayPal, lưu DB an toàn và đẩy vào Huey để xử lý bất đồng bộ.',
+    responses={200: openapi.OpenApiTypes.OBJECT},
+    tags=['payments'],
+)
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])  # Webhook luôn public, bảo mật dựa vào signature
+def paypal_webhook(request: Request) -> Response:
+    headers = dict(request.headers)
+    raw_body = request.body
+
+    # 1. Xác thực nguồn gốc (Chữ ký PayPal)
+    is_valid = paypal_helper.verify_webhook_signature(headers, raw_body)
+    if not is_valid:
+        return Response({"error": "Invalid signature"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 2. Phân tích Payload
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return Response({"error": "Invalid JSON body"}, status=status.HTTP_400_BAD_REQUEST)
+
+    paypal_event_id = payload.get('id')
+    event_type = payload.get('event_type')
+
+    if not paypal_event_id or not event_type:
+        return Response({"error": "Missing event data"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 3. Store-and-Forward: Lưu event (Idempotency) và enqueue task
+    event, created = WebhookEvent.objects.get_or_create(
+        paypal_event_id=paypal_event_id,
+        defaults={
+            "event_type": event_type,
+            "payload": payload,
+            "status": WebhookEvent.Status.PENDING,
+        }
+    )
+
+    # Nếu sự kiện là mới hoặc trước đó bị kẹt/lỗi, đẩy vào hàng đợi Huey
+    if created or event.status in [WebhookEvent.Status.PENDING, WebhookEvent.Status.FAILED]:
+        process_webhook_event(event.id)  # Gửi ID để task lấy record từ DB
+
+    # Luôn trả về 200 OK ngay lập tức cho PayPal
+    # logger.info("INFO: return cho paypal")
+    return Response({"status": "received"}, status=status.HTTP_200_OK)

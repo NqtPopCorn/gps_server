@@ -13,5 +13,6 @@ urlpatterns = [
     # PayPal
     path('paypal/create-order/', views.paypal_create_order, name='paypal-create-order'),
     path('paypal/capture-order/<str:order_id>/', views.paypal_capture_order, name='paypal-capture-order'),
+    path('paypal/webhook', views.paypal_webhook, name='paypal-webhook'),
 ]
 

@@ -50,6 +50,7 @@ CORS_ALLOW_HEADERS = [
 PAYPAL_CLIENT_ID = env('PAYPAL_CLIENT_ID', default='')
 PAYPAL_SECRET = env('PAYPAL_SECRET', default='')
 PAYPAL_BASE = env('PAYPAL_BASE', default='https://api-m.sandbox.paypal.com')
+PAYPAL_WEBHOOK_ID = env('PAYPAL_WEBHOOK_ID', default='')
 PAYPAL_VND_TO_USD_RATE = float(env('PAYPAL_VND_TO_USD_RATE', default='25000'))
 
 # Cloudinary
