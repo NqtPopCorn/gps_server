@@ -1,6 +1,7 @@
 from datetime import datetime
 import uuid
 from django.db import models
+from config import settings
 from pois.models import Poi
 from django.utils import timezone
 from accounts.models import User
@@ -51,14 +52,24 @@ class TourActivationCode(models.Model):
         max_length=12,
         unique=True,
         default=generate_code
-    )
+    )   
 
-    tour = models.OneToOneField(Tour, on_delete=models.CASCADE, related_name='activation_code')
+    tour = models.ForeignKey(
+        Tour,
+        on_delete=models.CASCADE,
+        related_name='activation_codes'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     expired_at = models.DateTimeField(null=True, blank=True)
+    usage_limit = models.IntegerField(default=1, null=False)
+    used_count = models.IntegerField(default=0)
+    days_credit = models.IntegerField(default=1, null=False) # 1d
+    
     
     def is_expired(self):
+        if self.expired_at is None:
+            return False
         return timezone.now() > self.expired_at
     
     def refresh_code(self, valid_seconds=30):
@@ -66,6 +77,12 @@ class TourActivationCode(models.Model):
         self.code = generate_code()
         self.expired_at = timezone.now() + timedelta(seconds=valid_seconds)
         self.save(update_fields=['code', 'expired_at', 'updated_at'])
+
+    def can_use(self):
+        return (
+            not self.is_expired()
+            and self.used_count < self.usage_limit
+        )
 
     def __str__(self):
         return f"{self.code} - {self.tour_id}"
@@ -75,3 +92,23 @@ class TourActivationCode(models.Model):
             models.Index(fields=["code"]),
             models.Index(fields=["expired_at"]),
         ]
+
+class TourActivationRedemption(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE
+    )
+
+    activation_code = models.ForeignKey(
+        TourActivationCode,
+        on_delete=models.CASCADE
+    )
+
+    activated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user"]),
+            models.Index(fields=["activation_code"]),
+        ]
+

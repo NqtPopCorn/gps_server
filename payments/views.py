@@ -23,6 +23,7 @@ from payments.serializers import (
     PayForStartTourSerializer
 )
 from tours.models import Tour
+from rest_framework.permissions import IsAuthenticated
 
 # Helpers & Tasks
 from . import paypal as paypal_helper
@@ -86,6 +87,40 @@ class InvoiceDetailView(generics.RetrieveAPIView):
         if getattr(user, 'role', None) == 'admin':
             return Invoice.objects.all()
         return Invoice.objects.filter(user=user)
+
+
+@extend_schema(
+    summary="Lấy trạng thái hóa đơn",
+    description="API polling để frontend kiểm tra trạng thái xử lý thanh toán.",
+    responses={
+        200: inline_serializer(
+            name="InvoiceStatusResponse",
+            fields={
+                # "id": serializers.UUIDField(),
+                "status": serializers.CharField(),
+                # "paid_at": serializers.DateTimeField(allow_null=True),
+            },
+        )
+    },
+    tags=["payments"],
+)
+class InvoiceStatusView(generics.RetrieveAPIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if getattr(user, "role", None) == "admin":
+            return Invoice.objects.all()
+
+        return Invoice.objects.filter(user=user)
+
+    def retrieve(self, request: Request, *args, **kwargs):
+        invoice = self.get_object()
+
+        return Response({
+            "status": invoice.status,
+        })
 
 
 # ──────────────────────────────────────────────
@@ -185,13 +220,11 @@ def paypal_create_order(request: Request) -> Response:
     }
 
     try:
-        result = paypal_helper.paypal_request('POST', '/v2/checkout/orders', json=payload)
+        payload_usd = paypal_helper.ensure_usd_payload(payload.copy())
+        result = paypal_helper.paypal_request('POST', '/v2/checkout/orders', json=payload_usd)
+        # result = paypal_helper.paypal_request('POST', '/v2/checkout/orders', json=payload)
     except requests.HTTPError as e:
-        if e.response is not None and e.response.status_code == 422:
-            payload_usd = paypal_helper.ensure_usd_payload(payload.copy())
-            result = paypal_helper.paypal_request('POST', '/v2/checkout/orders', json=payload_usd)
-        else:
-            raise
+        raise
 
     order_id = result.get('id', '')
     if order_id:
@@ -212,7 +245,7 @@ def paypal_create_order(request: Request) -> Response:
 )
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
-def paypal_capture_order(request: Request, order_id: str) -> Response:
+def paypal_capture_order_async(request: Request, order_id: str) -> Response:
     """
     Vì hệ thống đã chuyển sang dùng Webhook & Background Tasks, 
     endpoint này chỉ đảm nhiệm việc gọi API capture. Nó không cập nhật DB.
@@ -234,7 +267,7 @@ def paypal_capture_order(request: Request, order_id: str) -> Response:
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])  # Webhook luôn public, bảo mật dựa vào signature
 def paypal_webhook(request: Request) -> Response:
-    headers = dict(request.headers)
+    headers = request.headers
     raw_body = request.body
 
     # 1. Xác thực nguồn gốc (Chữ ký PayPal)

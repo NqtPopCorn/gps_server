@@ -187,14 +187,17 @@ def _handle_capture_completed(payload: dict) -> None:
         return
 
     with transaction.atomic():
-        Invoice.objects.filter(pk=invoice.pk, status=Invoice.Status.PENDING).update(
+        # chuyển từ pending thành success
+        updated = Invoice.objects.filter(
+            pk=invoice.pk,
+            status=Invoice.Status.PENDING
+        ).update(
             status=Invoice.Status.SUCCESS,
             paid_at=timezone.now(),
         )
-        invoice.refresh_from_db()
 
-        if invoice.status != Invoice.Status.SUCCESS:
-            # Another process already moved the status; bail
+        # nếu không row nào affected <=> đã grant => không làm nữa
+        if updated == 0:
             return
 
         if invoice.invoice_type == Invoice.Type.POI_CREDIT:
