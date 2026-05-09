@@ -38,3 +38,14 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email
+    
+# class Device(models.Model):
+#     device_id = models.CharField(unique=True)
+#     user = models.ForeignKey(
+#         User,
+#         null=True,
+#         blank=True,
+#         on_delete=models.SET_NULL,
+#         related_name="devices"
+#     )
+

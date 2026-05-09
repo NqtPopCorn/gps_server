@@ -8,6 +8,7 @@ from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, OpenApiResponse, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
+from accounts.permissions import HasDeviceId
 from tours.models import Tour, TourPoint
 from pois.models import Poi
 from tours.serializers import (
@@ -22,6 +23,9 @@ from core.cloudinary_helper import upload_image
 from django.db import transaction
 from django.db.models import F
 import math
+from django.contrib.auth.models import AnonymousUser
+
+from tours.services import activate_code
 
 # ─── PUBLIC TOUR ENDPOINTS ───────────────────────────────────────────────────
 
@@ -102,79 +106,81 @@ from .models import Tour, TourActivationCode
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse, inline_serializer
 from rest_framework import serializers
 
-class TourActivationCodeView(APIView):
-    @extend_schema(
-        summary="Lấy mã QR động kích hoạt Tour",
-        description="API phục vụ cơ chế Polling cho màn hình hiển thị tại POI. Tự động cấp mã mới nếu mã cũ hết hạn.",
-        tags=['Tour Activation'],
-        parameters=[
-            OpenApiParameter(name='tour_id', description='ID của Tour', required=True, type=str, location=OpenApiParameter.PATH)
-        ],
-        responses={
-            200: api_response_schema("TourActivationCodeResponse", TourActivationCodeSerializer),
-            404: OpenApiResponse(description='Không tìm thấy Tour')
-        }
-    )
-    @transaction.atomic
-    def get(self, request, tour_id):
-        tour = get_object_or_404(Tour, id=tour_id)
-        if tour.status != 'published':
-            return Response({"error": "Tour is not active"}, status=status.HTTP_400_BAD_REQUEST)
+# class TourActivationCodeView(APIView):
+#     @extend_schema(
+#         summary="Lấy mã QR kích hoạt Tour",
+#         description="API phục vụ cơ chế Polling cho màn hình hiển thị tại POI. Tự động cấp mã mới nếu mã cũ hết hạn.",
+#         tags=['Tour Activation'],
+#         parameters=[
+#             OpenApiParameter(name='tour_id', description='ID của Tour', required=True, type=str, location=OpenApiParameter.PATH)
+#         ],
+#         responses={
+#             200: api_response_schema("TourActivationCodeResponse", TourActivationCodeSerializer),
+#             404: OpenApiResponse(description='Không tìm thấy Tour')
+#         }
+#     )
+#     @transaction.atomic
+#     def get(self, request, tour_id):
+#         tour = get_object_or_404(Tour, id=tour_id)
+#         if tour.status != 'published':
+#             return Response({"error": "Tour is not active"}, status=status.HTTP_400_BAD_REQUEST)
 
-        activation_code, created = TourActivationCode.objects.get_or_create(tour=tour)
+#         activation_code, created = TourActivationCode.objects.get_or_create(tour=tour)
 
-        if created or activation_code.is_expired():
-            activation_code.refresh_code(valid_seconds=300)
+#         if created or activation_code.is_expired():
+#             activation_code.refresh_code(valid_seconds=300)
 
-        remaining_seconds = int((activation_code.expired_at - timezone.now()).total_seconds())
-        remaining_seconds = max(0, remaining_seconds) 
+#         remaining_seconds = int((activation_code.expired_at - timezone.now()).total_seconds())
+#         remaining_seconds = max(0, remaining_seconds) 
 
-        return api_response({
-            "tour_id": tour.id,
-            "code": activation_code.code,
-            "expires_in": remaining_seconds,
-            "expired_at": activation_code.expired_at.isoformat()
-        })
+#         return api_response({
+#             "tour_id": tour.id,
+#             "code": activation_code.code,
+#             "expires_in": remaining_seconds,
+#             "expired_at": activation_code.expired_at.isoformat()
+#         })
 
-    @extend_schema(
-        summary="Refresh mã QR động kích hoạt Tour",
-        description="API phục vụ cơ chế Polling cho màn hình hiển thị tại POI. Tự động cấp mã mới nếu mã cũ hết hạn.",
-        tags=['Tour Activation'],
-        parameters=[
-            OpenApiParameter(name='tour_id', description='ID của Tour', required=True, type=str, location=OpenApiParameter.PATH),
-            OpenApiParameter(name='ttl', description='Thời gian sống của mã QR (giây)', required=True, type=int, location=OpenApiParameter.QUERY),
-        ],
-        responses={
-            200: api_response_schema("TourActivationCodeResponse", TourActivationCodeSerializer),
-            404: OpenApiResponse(description='Không tìm thấy Tour')
-        }
-    )
-    @transaction.atomic
-    def post(self, request, tour_id):
-        tour = get_object_or_404(Tour, id=tour_id)
-        if tour.status != 'published':
-            return Response({"error": "Tour is not active"}, status=status.HTTP_400_BAD_REQUEST)
+#     @extend_schema(
+#         summary="Refresh mã QR động kích hoạt Tour",
+#         description="API phục vụ cơ chế Polling cho màn hình hiển thị tại POI. Tự động cấp mã mới nếu mã cũ hết hạn.",
+#         tags=['Tour Activation'],
+#         parameters=[
+#             OpenApiParameter(name='tour_id', description='ID của Tour', required=True, type=str, location=OpenApiParameter.PATH),
+#             OpenApiParameter(name='ttl', description='Thời gian sống của mã QR (giây)', required=True, type=int, location=OpenApiParameter.QUERY),
+#         ],
+#         responses={
+#             200: api_response_schema("TourActivationCodeResponse", TourActivationCodeSerializer),
+#             404: OpenApiResponse(description='Không tìm thấy Tour')
+#         }
+#     )
+#     @transaction.atomic
+#     def post(self, request, tour_id):
+#         tour = get_object_or_404(Tour, id=tour_id)
+#         if tour.status != 'published':
+#             return Response({"error": "Tour is not active"}, status=status.HTTP_400_BAD_REQUEST)
 
-        ttl = int(request.query_params.get('ttl', 300))
+#         ttl = int(request.query_params.get('ttl', 300))
         
-        activation_code, created = TourActivationCode.objects.get_or_create(tour=tour)
+#         activation_code, created = TourActivationCode.objects.get_or_create(tour=tour)
 
-        activation_code.refresh_code(valid_seconds=ttl)
+#         activation_code.refresh_code(valid_seconds=ttl)
 
-        remaining_seconds = int((activation_code.expired_at - timezone.now()).total_seconds())
-        remaining_seconds = max(0, remaining_seconds) 
+#         remaining_seconds = int((activation_code.expired_at - timezone.now()).total_seconds())
+#         remaining_seconds = max(0, remaining_seconds) 
 
-        return api_response({
-            "tour_id": tour.id,
-            "code": activation_code.code,
-            "expires_in": remaining_seconds,
-            "expired_at": activation_code.expired_at.isoformat()
-        })
+#         return api_response({
+#             "tour_id": tour.id,
+#             "code": activation_code.code,
+#             "expires_in": remaining_seconds,
+#             "expired_at": activation_code.expired_at.isoformat()
+#         })
 
-class TourActivateView(APIView):
+class TourActivateCodeView(APIView):
+    permission_classes = [HasDeviceId]
+
     @extend_schema(
         summary="Kích hoạt Tour",
-        description="API phục vụ cơ chế Polling cho màn hình hiển thị tại POI. Tự động cấp mã mới nếu mã cũ hết hạn.",
+        description="",
         tags=['Tour Activation'],
         parameters=[
             OpenApiParameter(name='tour_id', description='ID của Tour', required=True, type=str, location=OpenApiParameter.PATH),
@@ -186,6 +192,9 @@ class TourActivateView(APIView):
         }
     )
     def get(self, request, tour_id):
+        device_id = request.device_id
+        user = request.user if not isinstance(request.user, AnonymousUser) else None
+
         tour = get_object_or_404(Tour, id=tour_id)
         if tour.status != 'published':
             return Response({"error": "Tour is not active"}, status=status.HTTP_400_BAD_REQUEST)
@@ -194,22 +203,13 @@ class TourActivateView(APIView):
         if not code:
             return Response({"error": "Code is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-        activation_code = TourActivationCode.objects.filter(code=code).first()
-        if not activation_code:
-            return Response({"error": "Code is not valid"}, status=status.HTTP_400_BAD_REQUEST)
-        if activation_code.is_expired():
-            return Response({"error": "Code is expired"}, status=status.HTTP_400_BAD_REQUEST)
-        if activation_code.tour != tour:
-            return Response({"error": "Code is not valid"}, status=status.HTTP_400_BAD_REQUEST)
-
-        remaining_seconds = int((activation_code.expired_at - timezone.now()).total_seconds())
-        remaining_seconds = max(0, remaining_seconds) 
+        print("activating code: "+str(code)+ " length: "+str(len(code)))
+        activate_code(user, device_id, code, tour)
 
         return api_response({
             "tour_id": tour.id,
-            "code": activation_code.code,
-            "expires_in": remaining_seconds,
-            "expired_at": activation_code.expired_at.isoformat()
+            "code": code,
+            "device_id": device_id
         })
 
 # ─── ADMIN TOUR ENDPOINTS ────────────────────────────────────────────────────

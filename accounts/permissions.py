@@ -25,10 +25,10 @@ class HasDeviceId(BasePermission):
             raise PermissionDenied("Missing X-Device-Id header")
 
         # validate UUID
-        try:
-            uuid.UUID(device_id)
-        except ValueError:
-            raise PermissionDenied("Invalid device id format")
+        # try:
+        #     uuid.UUID(device_id)
+        # except ValueError:
+        #     raise PermissionDenied("Invalid device id format")
 
         request.device_id = device_id
         return True

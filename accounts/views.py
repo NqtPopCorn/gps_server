@@ -10,6 +10,9 @@ from rest_framework import serializers as drf_serializers
 
 from accounts.serializers import RegisterSerializer, LoginSerializer, UserResponseSerializer
 from core.reponse_schema import api_response, api_response_schema
+from django.db import transaction
+
+from tours.services import syncUserAvailbleTour
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
@@ -119,7 +122,12 @@ class LoginView(APIView):
         # get device or fingerprint to sync history if exists
         device_id = request.headers.get('X-Device-Id', None)
         if(device_id):
-            syncHistory(user, device_id)
+            with transaction.atomic():
+                # sync user travel history
+                syncHistory(user, device_id)
+
+                # sync user avalable tour
+                syncUserAvailbleTour(user, device_id)
 
         token = AccessToken.for_user(user)
         user_data = UserResponseSerializer(user).data

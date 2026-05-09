@@ -1,7 +1,6 @@
-from tours.views import TourActivationCodeView
 from django.urls import path
 from tours.views import (
-    TourListView, TourDetailView, TourActivateView,
+    TourListView, TourDetailView, TourActivateCodeView,
     AdminTourListCreateView, AdminTourDetailView,
     AdminTourPointListCreateView, AdminTourPointDeleteView, AdminTourPointUpdateView
 )
@@ -9,9 +8,7 @@ from tours.views import (
 public_urlpatterns = [
     path('', TourListView.as_view(), name='tour-list'),
     path('<str:id>', TourDetailView.as_view(), name='tour-detail'),
-    # path('<str:tour_id>/activate', TourActivateView.as_view(), name='tour-activate'),
-    path('<str:tour_id>/qr-data', TourActivationCodeView.as_view(), name='tour-qr-data'),
-    path('<str:tour_id>/activate/', TourActivateView.as_view(), name='tour-activate'),
+    path('<str:tour_id>/activate/', TourActivateCodeView.as_view(), name='tour-activate'),
 ]
 
 admin_urlpatterns = [

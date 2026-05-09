@@ -1,9 +1,8 @@
 from django.utils import timezone
-from payments.models import UserAvailableTour
 from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field, extend_schema_serializer
 from drf_spectacular.types import OpenApiTypes
-from tours.models import Tour, TourPoint
+from tours.models import Tour, TourPoint, UserAvailableTour
 from pois.serializers import POISerializer
 from rest_framework.serializers import ListSerializer
 

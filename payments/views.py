@@ -1,13 +1,16 @@
+from datetime import timedelta
 import json
-from venv import logger
+import logging
 import requests
+
+logger = logging.getLogger(__name__)
 
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 
 from rest_framework import generics, permissions, status, serializers
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import APIView, api_view, permission_classes
 from rest_framework.request import Request
 from rest_framework.response import Response
 
@@ -15,23 +18,27 @@ from drf_spectacular.utils import extend_schema, extend_schema_view, inline_seri
 from drf_spectacular import openapi
 
 # Models & Serializers
-from payments.models import Invoice, UserAvailableTour, WebhookEvent
+from tours.models import UserAvailableTour
+from payments.models import Invoice
 from payments.serializers import (
-    InvoiceSerializer, 
-    InvoiceCreateSerializer, 
-    BuyPoiCreditSerializer, 
-    PayForStartTourSerializer
+    InvoiceSerializer,
+    InvoiceCreateSerializer,
+    BuyPoiCreditSerializer,
+    PayForStartTourSerializer,
+    BuyActivationBundleSerializer,
+    ActivationCodeInfoSerializer,
+    RedeemCodeSerializer,
 )
-from tours.models import Tour
+from tours.models import Tour, TourActivationCode
 from rest_framework.permissions import IsAuthenticated
 
 # Helpers & Tasks
 from . import paypal as paypal_helper
-from .tasks import process_webhook_event
 
 # Permissions
-from accounts.permissions import IsPartnerUser
+from accounts.permissions import IsAdminUser, IsPartnerUser
 
+PRICE_PER_USE_VND = Invoice.ACTIVATION_CODE_PER_USE_PRICE  # 10_000
 
 # ──────────────────────────────────────────────
 # Invoice CRUD
@@ -96,9 +103,7 @@ class InvoiceDetailView(generics.RetrieveAPIView):
         200: inline_serializer(
             name="InvoiceStatusResponse",
             fields={
-                # "id": serializers.UUIDField(),
                 "status": serializers.CharField(),
-                # "paid_at": serializers.DateTimeField(allow_null=True),
             },
         )
     },
@@ -139,7 +144,7 @@ class InvoiceStatusView(generics.RetrieveAPIView):
     tags=['payments'],
 )
 @api_view(['POST'])
-@permission_classes([IsPartnerUser])
+@permission_classes([IsPartnerUser, IsAdminUser])
 def buy_poi_credit(request: Request) -> Response:
     invoice = Invoice.objects.create(
         user=request.user,
@@ -178,6 +183,58 @@ def pay_to_start_tour(request: Request) -> Response:
     )
     return Response(InvoiceSerializer(invoice).data, status=status.HTTP_201_CREATED)
 
+
+# ──────────────────────────────────────────────
+# Partner: Mua Activation Bundle
+# ──────────────────────────────────────────────
+
+@extend_schema(
+    summary='Partner tạo Invoice mua activation code',
+    description=(
+        'Partner gọi endpoint này để tạo hóa đơn mua shared activation code cho tour. '
+        'Giá cố định 10,000 VND / lượt kích hoạt. '
+        'Sau khi thanh toán thành công qua PayPal, 1 TourActivationCode sẽ được sinh ra '
+        'với usage_limit = quantity. Partner phân phát code/QR này cho người dùng cuối. '
+        'Người dùng redeem code → cộng dồn days_credit vào UserAvailableTour.'
+    ),
+    request=BuyActivationBundleSerializer,
+    responses={201: InvoiceSerializer},
+    tags=['payments'],
+)
+@api_view(['POST'])
+@permission_classes([])
+def buy_activation_code(request: Request) -> Response:
+    ser = BuyActivationBundleSerializer(data=request.data)
+    if not ser.is_valid():
+        return Response({'error': ser.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+    vd = ser.validated_data
+    tour_id     = vd['tour_id']
+    quantity    = vd['quantity']
+    days_credit = vd.get('days_credit', 1)
+    expired = vd.get('code_expired_at', None)
+
+    tour = get_object_or_404(Tour, id=tour_id)
+
+    amount = quantity * PRICE_PER_USE_VND
+
+    code = TourActivationCode.objects.create(tour=tour, usage_limit=quantity)
+
+    invoice = Invoice.objects.create(
+        user=request.user,
+        invoice_type=Invoice.Type.BUY_ACTIVATION_CODE,
+        reason=(
+            f'Partner mua {quantity} lượt kích hoạt tour "{tour.name}" '
+            f'({days_credit} ngày/lượt)'
+        ),
+        amount=amount,
+        reference_id=code.id,
+        expired_at=expired
+    )
+
+    invoice.save(update_fields=['reference_id'])
+
+    return Response(InvoiceSerializer(invoice).data, status=status.HTTP_201_CREATED)
 
 # ──────────────────────────────────────────────
 # PayPal – Create & Capture Order
@@ -234,73 +291,166 @@ def paypal_create_order(request: Request) -> Response:
     return Response(result)
 
 
+# ──────────────────────────────────────────────
+# PayPal – Capture Order
+# ──────────────────────────────────────────────
+
 @extend_schema(
     summary='Capture PayPal Order sau khi user approve',
     description=(
-        'Endpoint này chỉ trigger việc capture từ phía frontend. '
-        'Toàn bộ logic cấp credit, cập nhật DB được xử lý bất đồng bộ thông qua Webhook.'
+        'Capture payment từ PayPal thông qua order_id. Cập nhật trạng thái invoice thành SUCCESS/FAILED. '
+        'Đặc biệt:\n'
+        '- POI_CREDIT: cấp tự động credit cho user.\n'
+        '- START_TOUR: upsert UserAvailableTour (7 ngày).\n'
+        '- BUY_ACTIVATION_CODE: sinh 1 TourActivationCode dùng chung với usage_limit = quantity.'
+    ),
+    request=inline_serializer(
+        name='PaypalCaptureOrderRequest',
+        fields={'invoiceId': serializers.UUIDField()},
     ),
     responses={200: openapi.OpenApiTypes.OBJECT},
     tags=['payments'],
 )
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
-def paypal_capture_order_async(request: Request, order_id: str) -> Response:
-    """
-    Vì hệ thống đã chuyển sang dùng Webhook & Background Tasks, 
-    endpoint này chỉ đảm nhiệm việc gọi API capture. Nó không cập nhật DB.
-    """
+def paypal_capture_order(request: Request, order_id: str) -> Response:
+    # Tìm invoice theo transaction_code hoặc invoiceId trong body
+    invoice = Invoice.objects.filter(transaction_code=order_id).first()
+    if not invoice:
+        invoice_id = request.data.get('invoiceId', '')
+        if invoice_id:
+            invoice = Invoice.objects.filter(id=invoice_id, user=request.user).first()
+
     result = paypal_helper.paypal_request('POST', f"/v2/checkout/orders/{order_id}/capture")
+    pay_status = result.get('status', '')
+
+    if invoice:
+        with transaction.atomic():
+            if pay_status == 'COMPLETED':
+                invoice.status = Invoice.Status.SUCCESS
+                invoice.paid_at = timezone.now()
+                invoice.transaction_code = order_id
+                invoice.save(update_fields=['status', 'paid_at', 'transaction_code'])
+
+                # ── Cấp POI credit ─────────────────────────────────────────────
+                if invoice.invoice_type == Invoice.Type.POI_CREDIT and invoice.user:
+                    user = invoice.user
+                    user.poi_credits = getattr(user, 'poi_credits', 0) + Invoice.POI_CREDIT_AMOUNT
+                    user.save(update_fields=['poi_credits'])
+                    print(f"[Credit] Cấp {Invoice.POI_CREDIT_AMOUNT} POI credit cho {user.email}. "
+                          f"Tổng hiện tại: {user.poi_credits}")
+
+                # ── Upsert UserAvailableTour (START_TOUR) ──────────────────────
+                if invoice.invoice_type == Invoice.Type.START_TOUR and invoice.user:
+                    tour_available, created = UserAvailableTour.objects.update_or_create(
+                        user=invoice.user,
+                        tour=get_object_or_404(Tour, id=invoice.reference_id),
+                        defaults={
+                            'expired_at': timezone.now() + timedelta(days=7)
+                        }
+                    )
+                    print(f"[UserAvailableTour] {'Updated' if not created else 'Created'} {tour_available}")
+
+                # ── Sinh shared TourActivationCode (BUY_ACTIVATION_CODE) ─────
+                if invoice.invoice_type == Invoice.Type.BUY_ACTIVATION_CODE and invoice.reference_id:
+                    _handle_activation_code(invoice)
+
+            else:
+                invoice.status = Invoice.Status.FAILED
+                invoice.transaction_code = order_id
+                invoice.save(update_fields=['status', 'transaction_code'])
+
     return Response(result)
 
 
 # ──────────────────────────────────────────────
-# PayPal – Webhook 
+# Partner: Lấy thông tin code sau khi thanh toán
 # ──────────────────────────────────────────────
 
 @extend_schema(
-    summary='PayPal Webhook Endpoint',
-    description='Nhận events từ PayPal, lưu DB an toàn và đẩy vào Huey để xử lý bất đồng bộ.',
-    responses={200: openapi.OpenApiTypes.OBJECT},
-    tags=['payments'],
+    summary='Lấy thông tin activation code của invoice',
+    description=(
+        'Sau khi invoice BUY_ACTIVATION_CODE chuyển sang SUCCESS, '
+        'partner dùng endpoint này để lấy shared code + QR data để phân phát cho người dùng.'
+    ),
+    responses={
+        200: ActivationCodeInfoSerializer,
+        402: inline_serializer(
+            name='InvoiceNotPaidResponse',
+            fields={'error': serializers.CharField()},
+        ),
+        404: inline_serializer(
+            name='CodeNotFoundResponse',
+            fields={'error': serializers.CharField()},
+        ),
+    },
+    tags=['invoices'],
 )
-@api_view(['POST'])
-@permission_classes([permissions.AllowAny])  # Webhook luôn public, bảo mật dựa vào signature
-def paypal_webhook(request: Request) -> Response:
-    headers = request.headers
-    raw_body = request.body
+@api_view(['GET'])
+@permission_classes([])
+def invoice_activation_code(request: Request, pk: str) -> Response:
+    invoice = get_object_or_404(Invoice, id=pk, user=request.user)
 
-    # 1. Xác thực nguồn gốc (Chữ ký PayPal)
-    is_valid = paypal_helper.verify_webhook_signature(headers, raw_body)
-    if not is_valid:
-        return Response({"error": "Invalid signature"}, status=status.HTTP_400_BAD_REQUEST)
+    if invoice.invoice_type != Invoice.Type.BUY_ACTIVATION_CODE:
+        return Response(
+            {'error': 'Invoice này không phải loại BUY_ACTIVATION_CODE.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
-    # 2. Phân tích Payload
-    try:
-        payload = json.loads(raw_body)
-    except json.JSONDecodeError:
-        return Response({"error": "Invalid JSON body"}, status=status.HTTP_400_BAD_REQUEST)
+    if invoice.status != Invoice.Status.SUCCESS:
+        return Response(
+            {'error': 'Invoice chưa được thanh toán thành công.'},
+            status=status.HTTP_402_PAYMENT_REQUIRED,
+        )
 
-    paypal_event_id = payload.get('id')
-    event_type = payload.get('event_type')
+    code = TourActivationCode.objects.filter(
+        id=invoice.reference_id
+    ).first()
 
-    if not paypal_event_id or not event_type:
-        return Response({"error": "Missing event data"}, status=status.HTTP_400_BAD_REQUEST)
+    if not code:
+        return Response(
+            {'error': 'Chưa tìm thấy activation code. Vui lòng thử lại sau.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
-    # 3. Store-and-Forward: Lưu event (Idempotency) và enqueue task
-    event, created = WebhookEvent.objects.get_or_create(
-        paypal_event_id=paypal_event_id,
-        defaults={
-            "event_type": event_type,
-            "payload": payload,
-            "status": WebhookEvent.Status.PENDING,
-        }
+    data = ActivationCodeInfoSerializer({
+        'code':        code.code,
+        'usage_limit': code.usage_limit,
+        'used_count':  code.used_count,
+        'days_credit': code.days_credit,
+        'expired_at':  code.expired_at,
+        'remaining':   max(0, code.usage_limit - code.used_count),
+    }).data
+    return Response(data)
+
+@transaction.atomic
+def _handle_activation_code(invoice: Invoice) -> None:
+
+    activation_code_id = invoice.reference_id
+
+    activation_code = (
+        TourActivationCode.objects
+        .select_for_update()
+        .filter(id=activation_code_id, status=TourActivationCode.Status.PENDING)
+        .first()
     )
 
-    # Nếu sự kiện là mới hoặc trước đó bị kẹt/lỗi, đẩy vào hàng đợi Huey
-    if created or event.status in [WebhookEvent.Status.PENDING, WebhookEvent.Status.FAILED]:
-        process_webhook_event(event.id)  # Gửi ID để task lấy record từ DB
+    if not activation_code:
+        print(
+            f"[BuyActivationCode] "
+            f"Activation code {activation_code_id} not found or PAID."
+        )
+        return
 
-    # Luôn trả về 200 OK ngay lập tức cho PayPal
-    # logger.info("INFO: return cho paypal")
-    return Response({"status": "received"}, status=status.HTTP_200_OK)
+    activation_code.status = (
+        TourActivationCode.Status.PAID
+    )
+
+    activation_code.save(
+        update_fields=["status", "updated_at"]
+    )
+
+    print(
+        f"[BuyActivationCode] "
+        f"Activation code '{activation_code.code}' marked as PAID."
+    )
